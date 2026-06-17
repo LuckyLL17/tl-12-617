@@ -42,6 +42,15 @@ api.interceptors.response.use(
   }
 );
 
+// 座位类型定义：包含可用、已售、锁定状态
+export interface Seat {
+  available: boolean;
+  sold: boolean;
+  locked: boolean;
+  locked_by: string | null;
+  locked_until: string | null;
+}
+
 export interface Movie {
   id: string;
   title: string;
@@ -76,7 +85,7 @@ export interface Schedule {
   end_time: string;
   hall: string;
   price: number;
-  seats: { [key: string]: { available: boolean; sold: boolean } };
+  seats: { [key: string]: Seat };
   movie_title?: string;
   cinema_name?: string;
   poster?: string;
@@ -156,6 +165,15 @@ export const scheduleAPI = {
   getSchedules: (params?: { movie_id?: string; cinema_id?: string; date?: string }) =>
     api.get<Schedule[]>('/schedules', { params }),
   getSchedule: (id: string) => api.get<Schedule>(`/schedules/${id}`),
+  // 根据人数推荐相邻座位
+  recommendSeats: (id: string, count: number) =>
+    api.post<{ recommended: string[]; message?: string }>(`/schedules/${id}/recommend`, { count }),
+  // 锁定选中的座位
+  lockSeats: (id: string, seats: string[]) =>
+    api.post<{ message: string; locked_until: string }>(`/schedules/${id}/lock`, { seats }),
+  // 解锁座位
+  unlockSeats: (id: string) =>
+    api.delete(`/schedules/${id}/lock`),
   createSchedule: (data: Partial<Schedule>) => api.post('/schedules', data),
   updateSchedule: (id: string, data: Partial<Schedule>) => api.put(`/schedules/${id}`, data),
   deleteSchedule: (id: string) => api.delete(`/schedules/${id}`)
@@ -164,8 +182,15 @@ export const scheduleAPI = {
 export const orderAPI = {
   getOrders: () => api.get<Order[]>('/orders'),
   getOrder: (id: string) => api.get<Order>(`/orders/${id}`),
+  // 创建订单（状态为 pending）
   createOrder: (data: { schedule_id: string; seats: string[] }) =>
     api.post('/orders', data),
+  // 支付订单（pending → paid）
+  payOrder: (id: string) =>
+    api.put(`/orders/${id}/pay`),
+  // 取消订单（pending → cancelled，释放座位）
+  cancelOrder: (id: string) =>
+    api.put(`/orders/${id}/cancel`),
   updateOrderStatus: (id: string, status: string) =>
     api.put(`/orders/${id}/status`, { status })
 };

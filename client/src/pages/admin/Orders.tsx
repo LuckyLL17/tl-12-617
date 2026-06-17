@@ -44,18 +44,21 @@ export default function AdminOrders() {
 
   const statusOptions = [
     { key: 'all', label: '全部' },
+    { key: 'pending', label: '待支付' },
     { key: 'paid', label: '已支付' },
     { key: 'refunded', label: '已退款' },
     { key: 'cancelled', label: '已取消' },
   ];
 
   const statusBadge: { [key: string]: string } = {
+    pending: 'bg-orange-100 text-orange-600',
     paid: 'bg-green-100 text-green-600',
     refunded: 'bg-gray-100 text-gray-600',
     cancelled: 'bg-red-100 text-red-600',
   };
 
   const statusText: { [key: string]: string } = {
+    pending: '待支付',
     paid: '已支付',
     refunded: '已退款',
     cancelled: '已取消',
@@ -111,6 +114,22 @@ export default function AdminOrders() {
                   </span>
                 </td>
                 <td className="px-4 py-3">
+                  {order.status === 'pending' && (
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => handleUpdateStatus(order.id, 'paid')}
+                        className="text-green-500 hover:text-green-600 text-sm"
+                      >
+                        确认支付
+                      </button>
+                      <button
+                        onClick={() => handleUpdateStatus(order.id, 'cancelled')}
+                        className="text-red-500 hover:text-red-600 text-sm"
+                      >
+                        取消
+                      </button>
+                    </div>
+                  )}
                   {order.status === 'paid' && (
                     <div className="flex gap-2">
                       <button

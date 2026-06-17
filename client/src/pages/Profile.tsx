@@ -110,8 +110,16 @@ export default function Profile() {
                     <div className="flex-1 min-w-0">
                       <div className="flex items-start justify-between">
                         <h4 className="font-semibold text-lg">{order.movie_title}</h4>
-                        <span className="text-green-500 text-sm font-medium">
-                          {order.status === 'paid' ? '已支付' : order.status}
+                        <span className={`text-sm font-medium ${
+                          order.status === 'pending' ? 'text-orange-500' :
+                          order.status === 'paid' ? 'text-green-500' :
+                          order.status === 'cancelled' ? 'text-red-500' :
+                          'text-gray-500'
+                        }`}>
+                          {order.status === 'pending' ? '待支付' :
+                           order.status === 'paid' ? '已支付' :
+                           order.status === 'cancelled' ? '已取消' :
+                           order.status === 'refunded' ? '已退款' : order.status}
                         </span>
                       </div>
                       <p className="text-sm text-gray-500 mt-1">{order.cinema_name}</p>

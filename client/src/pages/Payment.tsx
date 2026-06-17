@@ -11,6 +11,7 @@ export default function Payment() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const seatsParam = searchParams.get('seats');
+  // 从URL参数解析已选座位
   const seats = seatsParam ? JSON.parse(decodeURIComponent(seatsParam)) : [];
   
   const [schedule, setSchedule] = useState<Schedule | null>(null);
@@ -18,6 +19,7 @@ export default function Payment() {
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('alipay');
   const [paymentStatus, setPaymentStatus] = useState<PaymentStatus>('idle');
   const [countdown, setCountdown] = useState(900);
+  // 创建订单后保存订单ID
   const [orderId, setOrderId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -35,6 +37,7 @@ export default function Payment() {
     fetchSchedule();
   }, [id]);
 
+  // 支付倒计时
   useEffect(() => {
     if (paymentStatus !== 'processing') return;
     if (countdown <= 0) {
@@ -53,28 +56,57 @@ export default function Payment() {
     return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
   };
 
+  /**
+   * 处理支付流程
+   * 1. 创建订单（状态为 pending）
+   * 2. 模拟支付过程
+   * 3. 调用支付确认接口（pending → paid）
+   */
   const handlePayment = async () => {
     if (!id || seats.length === 0) return;
     
     setPaymentStatus('processing');
     
     try {
+      // 第一步：创建订单（状态为 pending，座位标记为已售出）
+      const createRes = await orderAPI.createOrder({ schedule_id: id, seats });
+      const newOrderId = createRes.data.id;
+      setOrderId(newOrderId);
+
+      // 模拟支付等待
       await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      const res = await orderAPI.createOrder({ schedule_id: id, seats });
-      setOrderId(res.data.id);
-      
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      
+
+      // 第二步：确认支付（pending → paid）
+      await orderAPI.payOrder(newOrderId);
+
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
       setPaymentStatus('success');
-      
+
+      // 支付成功后跳转到订单详情
       setTimeout(() => {
-        navigate(`/orders/${res.data.id}`);
+        navigate(`/orders/${newOrderId}`);
       }, 2000);
     } catch (error: any) {
       setPaymentStatus('failed');
       console.error('支付失败:', error);
     }
+  };
+
+  /**
+   * 取消支付
+   * 取消订单并释放座位，返回选座页面
+   */
+  const handleCancel = async () => {
+    if (orderId) {
+      try {
+        await orderAPI.cancelOrder(orderId);
+      } catch (error) {
+        console.error('取消订单失败:', error);
+      }
+    }
+    // 返回选座页面
+    navigate(`/schedules/${id}/seats?tickets=${seats.length}`);
   };
 
   if (loading) {
@@ -169,6 +201,12 @@ export default function Payment() {
 
               <div className="flex gap-4">
                 <button
+                  onClick={handleCancel}
+                  className="px-6 py-3.5 bg-gray-100 text-gray-600 rounded-xl hover:bg-gray-200 transition-all font-medium"
+                >
+                  取消
+                </button>
+                <button
                   onClick={handlePayment}
                   className="flex-1 py-3.5 bg-gradient-to-r from-red-500 to-red-600 text-white rounded-xl hover:from-red-600 hover:to-red-700 transition-all font-medium shadow-lg shadow-red-500/30"
                 >
@@ -210,7 +248,9 @@ export default function Payment() {
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-gray-500">订单编号</span>
-                  <span className="text-sm text-gray-400 font-mono">等待生成...</span>
+                  <span className="text-sm text-gray-400 font-mono">
+                    {orderId || '等待生成...'}
+                  </span>
                 </div>
               </div>
             </div>
@@ -264,6 +304,20 @@ export default function Payment() {
                 {countdown <= 0 ? '支付超时，请重新下单' : '支付过程中出现问题，请重试'}
               </p>
               <div className="flex gap-4 justify-center">
+                {/* 如果订单已创建，可以取消订单 */}
+                {orderId && (
+                  <button
+                    onClick={async () => {
+                      try {
+                        await orderAPI.cancelOrder(orderId);
+                      } catch (e) {}
+                      navigate(`/schedules/${id}/seats?tickets=${seats.length}`);
+                    }}
+                    className="px-6 py-3.5 bg-gray-100 text-gray-600 rounded-xl hover:bg-gray-200 transition-all font-medium"
+                  >
+                    取消并返回
+                  </button>
+                )}
                 <button
                   onClick={() => setPaymentStatus('idle')}
                   className="px-8 py-3.5 bg-gradient-to-r from-red-500 to-red-600 text-white rounded-xl hover:from-red-600 hover:to-red-700 transition-all font-medium shadow-lg shadow-red-500/30"
