@@ -38,6 +38,49 @@ app.get('/api/health', (req, res) => {
 });
 
 /**
+ * 座位数据类型定义
+ */
+interface SeatData {
+  available: boolean;
+  sold: boolean;
+  locked: boolean;
+  locked_by: string | null;
+  locked_until: string | null;
+}
+
+/**
+ * 规范化座位数据，确保旧格式数据也有 locked 相关字段
+ * 兼容数据库中已有的旧数据（只有 available 和 sold 字段）
+ */
+function normalizeSeats(seats: any): { [key: string]: SeatData } {
+  const normalized: { [key: string]: SeatData } = {};
+  for (const seatId of Object.keys(seats)) {
+    const seat = seats[seatId];
+    normalized[seatId] = {
+      available: seat.available !== undefined ? seat.available : true,
+      sold: seat.sold !== undefined ? seat.sold : false,
+      locked: seat.locked !== undefined ? seat.locked : false,
+      locked_by: seat.locked_by !== undefined ? seat.locked_by : null,
+      locked_until: seat.locked_until !== undefined ? seat.locked_until : null
+    };
+  }
+  return normalized;
+}
+
+/**
+ * 检查座位数据是否需要更新（是否有旧格式数据缺少字段）
+ */
+function needsSeatUpdate(seats: any): boolean {
+  for (const seatId of Object.keys(seats)) {
+    const seat = seats[seatId];
+    if (seat.locked === undefined || seat.locked_by === undefined || seat.locked_until === undefined) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * 后台定时任务：清理过期锁座和超时未支付的订单
  * 每分钟执行一次
  */
@@ -56,8 +99,14 @@ const startSeatCleanupTask = () => {
       for (const schedule of schedules) {
         if (!schedule.seats) continue;
         
-        const seats = JSON.parse(schedule.seats);
+        let seats = JSON.parse(schedule.seats);
         let updated = false;
+        
+        // 先规范化旧格式数据
+        if (needsSeatUpdate(seats)) {
+          seats = normalizeSeats(seats);
+          updated = true;
+        }
         
         for (const seatId of Object.keys(seats)) {
           const seat = seats[seatId];

@@ -5,6 +5,36 @@ import { authMiddleware, adminMiddleware, AuthRequest } from '../middleware/auth
 
 const router = Router();
 
+/**
+ * 座位数据类型定义
+ */
+interface SeatData {
+  available: boolean;
+  sold: boolean;
+  locked: boolean;
+  locked_by: string | null;
+  locked_until: string | null;
+}
+
+/**
+ * 规范化座位数据，确保旧格式数据也有 locked 相关字段
+ * 兼容数据库中已有的旧数据（只有 available 和 sold 字段）
+ */
+function normalizeSeats(seats: any): { [key: string]: SeatData } {
+  const normalized: { [key: string]: SeatData } = {};
+  for (const seatId of Object.keys(seats)) {
+    const seat = seats[seatId];
+    normalized[seatId] = {
+      available: seat.available !== undefined ? seat.available : true,
+      sold: seat.sold !== undefined ? seat.sold : false,
+      locked: seat.locked !== undefined ? seat.locked : false,
+      locked_by: seat.locked_by !== undefined ? seat.locked_by : null,
+      locked_until: seat.locked_until !== undefined ? seat.locked_until : null
+    };
+  }
+  return normalized;
+}
+
 router.get('/', authMiddleware, (req: AuthRequest, res) => {
   const userId = req.user?.id;
   const userRole = req.user?.role;
@@ -87,7 +117,8 @@ router.post('/', authMiddleware, (req: AuthRequest, res) => {
     return res.status(404).json({ message: '排片不存在' });
   }
   
-  const currentSeats = JSON.parse(schedule.seats);
+  // 规范化座位数据，兼容旧格式
+  const currentSeats = normalizeSeats(JSON.parse(schedule.seats));
   const now = new Date();
   
   // 检查座位是否可用
@@ -169,7 +200,8 @@ router.post('/:id/pay', authMiddleware, (req: AuthRequest, res) => {
     return res.status(404).json({ message: '排片不存在' });
   }
   
-  const seats = JSON.parse(schedule.seats);
+  // 规范化座位数据，兼容旧格式
+  const seats = normalizeSeats(JSON.parse(schedule.seats));
   const orderSeats = JSON.parse(order.seats);
   const now = new Date();
   
@@ -239,7 +271,8 @@ router.post('/:id/cancel', authMiddleware, (req: AuthRequest, res) => {
     return res.status(404).json({ message: '排片不存在' });
   }
   
-  const seats = JSON.parse(schedule.seats);
+  // 规范化座位数据，兼容旧格式
+  const seats = normalizeSeats(JSON.parse(schedule.seats));
   const orderSeats = JSON.parse(order.seats);
   const now = new Date();
   
