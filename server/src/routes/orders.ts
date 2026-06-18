@@ -210,14 +210,17 @@ router.post('/:id/pay', authMiddleware, (req: AuthRequest, res) => {
 /**
  * 取消订单接口
  * 取消待支付订单，释放锁定的座位
+ * 普通用户只能取消自己的订单并释放自己锁定的座位
+ * 管理员可以取消任何订单并释放任何人锁定的座位
  */
 router.post('/:id/cancel', authMiddleware, (req: AuthRequest, res) => {
   const { id } = req.params;
   const userId = req.user?.id;
   const userRole = req.user?.role;
+  const isAdmin = userRole === 'admin';
   
   let order;
-  if (userRole === 'admin') {
+  if (isAdmin) {
     order = db.prepare('SELECT * FROM orders WHERE id = ?').get(id) as any;
   } else {
     order = db.prepare('SELECT * FROM orders WHERE id = ? AND user_id = ?').get(id, userId) as any;
@@ -238,6 +241,25 @@ router.post('/:id/cancel', authMiddleware, (req: AuthRequest, res) => {
   
   const seats = JSON.parse(schedule.seats);
   const orderSeats = JSON.parse(order.seats);
+  const now = new Date();
+  
+  // 预检查：验证座位锁定状态
+  for (const seatId of orderSeats) {
+    const seat = seats[seatId];
+    if (!seat) {
+      return res.status(400).json({ message: `座位 ${seatId} 不存在` });
+    }
+    
+    // 如果座位处于锁定状态
+    if (seat.locked && seat.locked_until && new Date(seat.locked_until) > now) {
+      // 普通用户必须校验 locked_by 是否匹配当前用户
+      if (!isAdmin && seat.locked_by !== userId) {
+        return res.status(400).json({ 
+          message: `座位 ${seatId} 不是由您锁定的，无法取消` 
+        });
+      }
+    }
+  }
   
   const updateOrder = db.prepare('UPDATE orders SET status = ? WHERE id = ?');
   const updateSeats = db.prepare('UPDATE schedules SET seats = ? WHERE id = ?');
@@ -249,10 +271,14 @@ router.post('/:id/cancel', authMiddleware, (req: AuthRequest, res) => {
     // 释放锁定的座位
     for (const seatId of orderSeats) {
       const seat = seats[seatId];
-      if (seat && seat.locked && seat.locked_by === userId) {
-        seat.locked = false;
-        seat.locked_by = null;
-        seat.locked_until = null;
+      if (seat && seat.locked) {
+        // 管理员可以释放任何人的锁座
+        // 普通用户只能释放自己的锁座
+        if (isAdmin || seat.locked_by === userId) {
+          seat.locked = false;
+          seat.locked_by = null;
+          seat.locked_until = null;
+        }
       }
     }
     

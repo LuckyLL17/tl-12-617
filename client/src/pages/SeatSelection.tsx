@@ -56,14 +56,31 @@ export default function SeatSelection() {
     };
   }, [id, fetchSchedule]);
 
-  // 更新URL中的票数参数
-  const updateTicketCount = (count: number) => {
+  /**
+   * 更新票数并自动推荐座位
+   * 点击人数按钮时：更新票数 + 自动调用推荐接口
+   */
+  const updateTicketCount = async (count: number) => {
     setCurrentCount(count);
     const newParams = new URLSearchParams(searchParams);
     newParams.set('tickets', count.toString());
     setSearchParams(newParams);
-    // 重新选择座位时清空已选
     setSelectedSeats([]);
+    
+    // 自动调用推荐接口
+    if (!id) return;
+    setRecommending(true);
+    try {
+      const res = await scheduleAPI.recommendSeats(id, count);
+      const recommended = res.data.recommended_seats;
+      if (recommended && recommended.length > 0) {
+        setSelectedSeats(recommended);
+      }
+    } catch (error: any) {
+      console.error('推荐座位失败:', error);
+    } finally {
+      setRecommending(false);
+    }
   };
 
   /**

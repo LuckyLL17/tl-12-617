@@ -1,16 +1,17 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { scheduleAPI, Schedule, orderAPI, Order } from '../services/api';
 import PageHeader from '../components/PageHeader';
 
 type PaymentMethod = 'alipay' | 'wechat' | 'card';
-type PaymentStatus = 'idle' | 'processing' | 'success' | 'failed';
+type PaymentStatus = 'idle' | 'processing' | 'success' | 'failed' | 'expired';
 
 export default function Payment() {
   const { id, orderId } = useParams<{ id: string; orderId: string }>();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const seatsParam = searchParams.get('seats');
+  const autoCancelledRef = useRef(false); // 防止重复自动取消
   
   const [schedule, setSchedule] = useState<Schedule | null>(null);
   const [order, setOrder] = useState<Order | null>(null);
@@ -66,10 +67,16 @@ export default function Payment() {
 
   /**
    * 倒计时逻辑
+   * 倒计时结束后自动取消订单（如果有订单ID）
    */
   useEffect(() => {
     if (paymentStatus !== 'idle' && paymentStatus !== 'processing') return;
     if (countdown <= 0) {
+      // 倒计时结束，自动取消订单
+      if (orderId && !autoCancelledRef.current) {
+        autoCancelledRef.current = true;
+        handleAutoCancelOrder();
+      }
       return;
     }
     const timer = setInterval(() => {
@@ -81,7 +88,23 @@ export default function Payment() {
       });
     }, 1000);
     return () => clearInterval(timer);
-  }, [countdown, paymentStatus]);
+  }, [countdown, paymentStatus, orderId]);
+
+  /**
+   * 自动取消订单（倒计时结束时调用）
+   */
+  const handleAutoCancelOrder = async () => {
+    const targetOrderId = orderId || order?.id;
+    if (!targetOrderId) return;
+    
+    try {
+      await orderAPI.cancelOrder(targetOrderId);
+      setPaymentStatus('expired');
+    } catch (error: any) {
+      console.error('自动取消订单失败:', error);
+      setPaymentStatus('expired');
+    }
+  };
 
   /**
    * 格式化倒计时显示
@@ -416,6 +439,41 @@ export default function Payment() {
                   className="px-8 py-3.5 border border-gray-300 text-gray-600 rounded-xl hover:bg-gray-50 transition-all font-medium"
                 >
                   返回选座
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* 支付超时自动取消 */}
+      {paymentStatus === 'expired' && (
+        <>
+          <PageHeader 
+            title="支付超时" 
+            subtitle="订单已自动取消，座位已释放"
+          />
+          
+          <div className="bg-white rounded-xl overflow-hidden shadow-sm">
+            <div className="p-8 text-center">
+              <div className="w-20 h-20 mx-auto mb-4 bg-orange-100 rounded-full flex items-center justify-center">
+                <span className="text-4xl">⏰</span>
+              </div>
+              <h2 className="text-2xl font-bold text-orange-600 mb-2">支付超时</h2>
+              <p className="text-gray-500 mb-2">订单已自动取消</p>
+              <p className="text-gray-400 text-sm mb-6">座位已释放，请重新选择座位</p>
+              <div className="flex gap-4 justify-center">
+                <button
+                  onClick={() => {
+                    if (schedule) {
+                      navigate(`/schedules/${schedule.id}/seats?tickets=${seats.length}`);
+                    } else {
+                      navigate(-1);
+                    }
+                  }}
+                  className="px-8 py-3.5 bg-gradient-to-r from-red-500 to-red-600 text-white rounded-xl hover:from-red-600 hover:to-red-700 transition-all font-medium shadow-lg shadow-red-500/30"
+                >
+                  重新选座
                 </button>
               </div>
             </div>
