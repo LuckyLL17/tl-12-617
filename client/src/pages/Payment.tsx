@@ -22,6 +22,10 @@ export default function Payment() {
   const [paymentStatus, setPaymentStatus] = useState<PaymentStatus>('idle');
   const [countdown, setCountdown] = useState(900);
   const hasUnmounted = useRef(false);
+  
+  // 使用 ref 跟踪最新状态，避免 useEffect 依赖变化导致的误取消
+  const orderStatusRef = useRef<string | undefined>(undefined);
+  const paymentStatusRef = useRef<PaymentStatus>('idle');
 
   /**
    * 获取订单信息和排片信息
@@ -36,6 +40,7 @@ export default function Payment() {
           // 新模式：根据订单ID获取
           const orderRes = await orderAPI.getOrder(orderId);
           setOrder(orderRes.data);
+          orderStatusRef.current = orderRes.data.status;
           
           // 获取排片信息
           const scheduleRes = await scheduleAPI.getSchedule(orderRes.data.schedule_id);
@@ -63,53 +68,14 @@ export default function Payment() {
     fetchData();
   }, [id, orderId]);
 
-  /**
-   * 倒计时定时器
-   * 支付处理中才显示倒计时
-   */
+  // 同步状态到 ref
   useEffect(() => {
-    if (paymentStatus !== 'processing' && paymentStatus !== 'idle') return;
-    if (countdown <= 0) {
-      if (orderId && order?.status === 'pending') {
-        // 超时自动取消订单
-        handleCancelOrder();
-      }
-      setPaymentStatus('failed');
-      return;
-    }
-    
-    const timer = setInterval(() => {
-      setCountdown(prev => prev - 1);
-    }, 1000);
-    
-    return () => clearInterval(timer);
-  }, [countdown, paymentStatus, orderId, order?.status]);
-
-  /**
-   * 组件卸载时，如果订单还是pending状态，取消订单释放座位
-   */
+    orderStatusRef.current = order?.status;
+  }, [order?.status]);
+  
   useEffect(() => {
-    hasUnmounted.current = false;
-    
-    return () => {
-      hasUnmounted.current = true;
-      // 如果是待支付状态，离开页面时自动取消订单释放座位
-      if (orderId && order?.status === 'pending' && paymentStatus === 'idle') {
-        orderAPI.cancelOrder(orderId).catch(err => {
-          console.error('自动取消订单失败:', err);
-        });
-      }
-    };
-  }, [orderId, order?.status, paymentStatus]);
-
-  /**
-   * 格式化倒计时显示
-   */
-  const formatCountdown = () => {
-    const minutes = Math.floor(countdown / 60);
-    const seconds = countdown % 60;
-    return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
-  };
+    paymentStatusRef.current = paymentStatus;
+  }, [paymentStatus]);
 
   /**
    * 取消订单并返回选座页
@@ -122,6 +88,55 @@ export default function Payment() {
     } catch (error) {
       console.error('取消订单失败:', error);
     }
+  };
+
+  /**
+   * 倒计时定时器
+   * 待支付或处理中状态下运行倒计时
+   */
+  useEffect(() => {
+    if (paymentStatus !== 'processing' && paymentStatus !== 'idle') return;
+    if (countdown <= 0) {
+      if (orderId && orderStatusRef.current === 'pending') {
+        // 超时自动取消订单
+        handleCancelOrder();
+      }
+      setPaymentStatus('failed');
+      return;
+    }
+    
+    const timer = setInterval(() => {
+      setCountdown(prev => prev - 1);
+    }, 1000);
+    
+    return () => clearInterval(timer);
+  }, [countdown, paymentStatus, orderId]);
+
+  /**
+   * 组件卸载时，如果订单还是pending状态且未开始支付，取消订单释放座位
+   * 使用 ref 确保获取到最新状态，且不会因为依赖变化而误触发
+   */
+  useEffect(() => {
+    hasUnmounted.current = false;
+    
+    return () => {
+      hasUnmounted.current = true;
+      // 只有在待支付且未开始支付时，离开页面才自动取消订单
+      if (orderId && orderStatusRef.current === 'pending' && paymentStatusRef.current === 'idle') {
+        orderAPI.cancelOrder(orderId).catch(err => {
+          console.error('自动取消订单失败:', err);
+        });
+      }
+    };
+  }, [orderId]);
+
+  /**
+   * 格式化倒计时显示
+   */
+  const formatCountdown = () => {
+    const minutes = Math.floor(countdown / 60);
+    const seconds = countdown % 60;
+    return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
   };
 
   /**
