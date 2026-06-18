@@ -1,18 +1,22 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { scheduleAPI, Schedule } from '../services/api';
+import { scheduleAPI, Schedule, orderAPI } from '../services/api';
 import PageHeader from '../components/PageHeader';
 
 export default function SeatSelection() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const ticketCount = parseInt(searchParams.get('tickets') || '1', 10);
+  const initialTicketCount = parseInt(searchParams.get('tickets') || '1', 10);
   
   const [schedule, setSchedule] = useState<Schedule | null>(null);
   const [selectedSeats, setSelectedSeats] = useState<string[]>([]);
+  const [recommendedSeats, setRecommendedSeats] = useState<string[]>([]);
+  const [ticketCount, setTicketCount] = useState(initialTicketCount);
   const [loading, setLoading] = useState(true);
+  const [recommending, setRecommending] = useState(false);
 
+  /** 获取排片信息 */
   useEffect(() => {
     const fetchSchedule = async () => {
       if (!id) return;
@@ -28,8 +32,45 @@ export default function SeatSelection() {
     fetchSchedule();
   }, [id]);
 
+  /**
+   * 智能推荐座位
+   * 根据当前选择的人数推荐最佳座位
+   */
+  const handleRecommend = useCallback(async () => {
+    if (!id || !schedule) return;
+    
+    setRecommending(true);
+    setRecommendedSeats([]);
+    
+    try {
+      const res = await orderAPI.recommendSeats(id, ticketCount);
+      setRecommendedSeats(res.data.seats);
+      // 自动选中推荐的座位
+      setSelectedSeats(res.data.seats);
+    } catch (error: any) {
+      console.error('推荐座位失败:', error);
+      alert(error.response?.data?.message || '推荐座位失败，请手动选择');
+    } finally {
+      setRecommending(false);
+    }
+  }, [id, schedule, ticketCount]);
+
+  /**
+   * 切换票数时，清除已选和推荐座位，并自动重新推荐
+   */
+  const handleTicketCountChange = (count: number) => {
+    setTicketCount(count);
+    setSelectedSeats([]);
+    setRecommendedSeats([]);
+  };
+
+  /**
+   * 切换座位选中状态
+   */
   const toggleSeat = (seatId: string) => {
-    if (!schedule?.seats[seatId]?.available || schedule?.seats[seatId]?.sold) return;
+    if (!schedule?.seats[seatId]?.available || 
+        schedule?.seats[seatId]?.sold || 
+        schedule?.seats[seatId]?.locked) return;
     
     setSelectedSeats(prev => {
       if (prev.includes(seatId)) {
@@ -41,19 +82,41 @@ export default function SeatSelection() {
       }
       return [...prev, seatId];
     });
+
+    // 用户手动选择时，清除推荐高亮
+    if (recommendedSeats.length > 0) {
+      setRecommendedSeats([]);
+    }
   };
 
-  const handleNext = () => {
+  /**
+   * 下一步：创建订单（锁座）并跳转到支付页
+   */
+  const handleNext = async () => {
     if (selectedSeats.length !== ticketCount) {
       alert(`请选择 ${ticketCount} 个座位`);
       return;
     }
     if (!id) return;
     
-    const seatsParam = encodeURIComponent(JSON.stringify(selectedSeats));
-    navigate(`/schedules/${id}/payment?seats=${seatsParam}`);
+    try {
+      // 创建订单（锁座）
+      const res = await orderAPI.createOrder({ 
+        schedule_id: id, 
+        seats: selectedSeats 
+      });
+      
+      // 跳转到支付页，带上订单ID
+      navigate(`/payment/${res.data.id}`);
+    } catch (error: any) {
+      console.error('创建订单失败:', error);
+      alert(error.response?.data?.message || '创建订单失败，请重试');
+    }
   };
 
+  /**
+   * 渲染座位矩阵
+   */
   const renderSeats = () => {
     if (!schedule) return null;
     
@@ -68,18 +131,31 @@ export default function SeatSelection() {
         const seat = schedule.seats[seatId];
         const isSelected = selectedSeats.includes(seatId);
         const isSold = seat?.sold;
+        const isLocked = seat?.locked;
+        const isRecommended = recommendedSeats.includes(seatId);
         
         let seatClass = 'seat-available';
-        if (isSold) seatClass = 'seat-sold';
-        else if (isSelected) seatClass = 'seat-selected';
+        let disabled = false;
+        
+        if (isSold) {
+          seatClass = 'seat-sold';
+          disabled = true;
+        } else if (isLocked) {
+          seatClass = 'seat-locked';
+          disabled = true;
+        } else if (isSelected) {
+          seatClass = 'seat-selected';
+        } else if (isRecommended) {
+          seatClass = 'seat-recommended';
+        }
         
         rowSeats.push(
           <button
             key={seatId}
             onClick={() => toggleSeat(seatId)}
-            disabled={isSold}
+            disabled={disabled}
             className={seatClass}
-            title={seatId}
+            title={isSold ? `${seatId} - 已售` : isLocked ? `${seatId} - 已锁定` : seatId}
           />
         );
       }
@@ -115,6 +191,8 @@ export default function SeatSelection() {
 
   const totalPrice = selectedSeats.length * schedule.price;
   const remainingSeats = ticketCount - selectedSeats.length;
+  // 可选票数范围1-6
+  const ticketOptions = [1, 2, 3, 4, 5, 6];
 
   return (
     <div className="animate-fade-in max-w-4xl mx-auto">
@@ -123,6 +201,7 @@ export default function SeatSelection() {
         subtitle={schedule ? `${schedule.movie_title} · ${schedule.hall}` : '请选择座位'}
       />
       
+      {/* 影片信息卡片 */}
       <div className="bg-white rounded-xl p-4 mb-6 shadow-sm">
         <div className="flex gap-4">
           <img
@@ -141,10 +220,28 @@ export default function SeatSelection() {
             <p className="text-gray-500 mt-1">
               ⏱️ {schedule.duration}分钟 · 屏幕方向：银幕中央
             </p>
-            <div className="flex items-center gap-4 mt-2">
-              <span className="bg-red-50 text-red-500 px-3 py-1 rounded-full text-sm font-medium">
-                👥 {ticketCount} 张票
-              </span>
+            
+            {/* 人数选择器 */}
+            <div className="mt-3">
+              <p className="text-sm text-gray-600 mb-2">选择人数：</p>
+              <div className="flex gap-2">
+                {ticketOptions.map(num => (
+                  <button
+                    key={num}
+                    onClick={() => handleTicketCountChange(num)}
+                    className={`w-10 h-10 rounded-full font-medium transition-all ${
+                      ticketCount === num
+                        ? 'bg-red-500 text-white shadow-md shadow-red-500/30'
+                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    }`}
+                  >
+                    {num}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-4 mt-3">
               <span className={`text-sm ${remainingSeats > 0 ? 'text-orange-500' : 'text-green-500'}`}>
                 {remainingSeats > 0 ? `还需选择 ${remainingSeats} 个座位` : '已选满，可继续'}
               </span>
@@ -153,7 +250,28 @@ export default function SeatSelection() {
         </div>
       </div>
 
+      {/* 座位图 */}
       <div className="bg-white rounded-xl p-6 mb-6 shadow-sm">
+        {/* 智能推荐按钮 */}
+        <div className="flex justify-center mb-4">
+          <button
+            onClick={handleRecommend}
+            disabled={recommending}
+            className="px-6 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-all font-medium shadow-md shadow-blue-500/30 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+          >
+            {recommending ? (
+              <>
+                <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent"></div>
+                智能推荐中...
+              </>
+            ) : (
+              <>
+                ✨ 智能推荐 {ticketCount} 个最佳座位
+              </>
+            )}
+          </button>
+        </div>
+
         <div className="flex justify-center mb-2">
           <div className="w-3/4 h-8 bg-gradient-to-b from-gray-300 to-gray-100 rounded-b-full flex items-center justify-center text-xs text-gray-500">
             银 幕
@@ -168,7 +286,8 @@ export default function SeatSelection() {
 
         <div className="space-y-2">{renderSeats()}</div>
 
-        <div className="flex justify-center gap-8 mt-8">
+        {/* 座位图例 */}
+        <div className="flex justify-center gap-6 mt-8 flex-wrap">
           <div className="flex items-center gap-2">
             <div className="w-5 h-5 rounded-t-lg bg-gray-200"></div>
             <span className="text-sm text-gray-600">可选</span>
@@ -178,12 +297,21 @@ export default function SeatSelection() {
             <span className="text-sm text-gray-600">已选</span>
           </div>
           <div className="flex items-center gap-2">
+            <div className="w-5 h-5 rounded-t-lg bg-blue-400"></div>
+            <span className="text-sm text-gray-600">推荐</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-5 h-5 rounded-t-lg bg-orange-400"></div>
+            <span className="text-sm text-gray-600">锁定</span>
+          </div>
+          <div className="flex items-center gap-2">
             <div className="w-5 h-5 rounded-t-lg bg-gray-400"></div>
             <span className="text-sm text-gray-600">已售</span>
           </div>
         </div>
       </div>
 
+      {/* 底部结算栏 */}
       <div className="bg-white rounded-xl p-4 shadow-sm sticky bottom-0 z-10">
         <div className="flex items-center justify-between">
           <div>

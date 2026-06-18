@@ -74,7 +74,8 @@ export const initDatabase = () => {
       schedule_id TEXT NOT NULL,
       seats TEXT NOT NULL,
       total_price REAL NOT NULL,
-      status TEXT DEFAULT 'paid',
+      status TEXT DEFAULT 'pending',
+      expires_at DATETIME,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (user_id) REFERENCES users(id),
       FOREIGN KEY (schedule_id) REFERENCES schedules(id)
@@ -296,10 +297,19 @@ const insertInitialData = () => {
   }
 };
 
+/**
+ * 生成初始座位数据
+ * 每个座位包含三个状态：
+ * - available: 是否可用（一般为true，除非是维修中的座位）
+ * - sold: 是否已售出
+ * - locked: 是否已被锁定（待支付订单锁定）
+ * - locked_order_id: 锁定该座位的订单ID
+ * @returns 座位JSON字符串
+ */
 function generateSeats(): string {
   const rows = 8;
   const cols = 12;
-  const seats: { [key: string]: { available: boolean; sold: boolean } } = {};
+  const seats: { [key: string]: { available: boolean; sold: boolean; locked: boolean; locked_order_id: string | null } } = {};
   
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
@@ -307,7 +317,9 @@ function generateSeats(): string {
       const random = Math.random();
       seats[seatId] = {
         available: true,
-        sold: random < 0.2
+        sold: random < 0.2,
+        locked: false,
+        locked_order_id: null
       };
     }
   }

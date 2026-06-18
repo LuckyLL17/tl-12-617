@@ -67,3 +67,11 @@ body {
 .seat-sold {
   @apply w-7 h-7 rounded-t-lg bg-gray-400 cursor-not-allowed;
 }
+
+.seat-locked {
+  @apply w-7 h-7 rounded-t-lg bg-orange-400 cursor-not-allowed;
+}
+
+.seat-recommended {
+  @apply w-7 h-7 rounded-t-lg bg-blue-400 cursor-pointer transition-all animate-pulse;
+}

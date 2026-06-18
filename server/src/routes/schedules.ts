@@ -55,18 +55,27 @@ router.get('/:id', (req, res) => {
   res.json(row);
 });
 
+/**
+ * 创建排片接口
+ * 初始化座位数据，包含available、sold、locked、locked_order_id四个状态
+ */
 router.post('/', authMiddleware, adminMiddleware, (req: AuthRequest, res) => {
   const { movie_id, cinema_id, start_time, end_time, hall, price } = req.body;
   const id = uuidv4();
   
   const rows = 8;
   const cols = 12;
-  const seats: { [key: string]: { available: boolean; sold: boolean } } = {};
+  const seats: { [key: string]: { available: boolean; sold: boolean; locked: boolean; locked_order_id: string | null } } = {};
   
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
       const seatId = `${String.fromCharCode(65 + r)}${c + 1}`;
-      seats[seatId] = { available: true, sold: false };
+      seats[seatId] = { 
+        available: true, 
+        sold: false,
+        locked: false,
+        locked_order_id: null
+      };
     }
   }
   
