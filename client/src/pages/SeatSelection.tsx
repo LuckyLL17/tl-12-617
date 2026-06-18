@@ -34,16 +34,16 @@ export default function SeatSelection() {
 
   /**
    * 智能推荐座位
-   * 根据当前选择的人数推荐最佳座位
+   * 根据指定人数推荐最佳座位
    */
-  const handleRecommend = useCallback(async () => {
+  const recommendSeats = useCallback(async (count: number) => {
     if (!id || !schedule) return;
     
     setRecommending(true);
     setRecommendedSeats([]);
     
     try {
-      const res = await orderAPI.recommendSeats(id, ticketCount);
+      const res = await orderAPI.recommendSeats(id, count);
       setRecommendedSeats(res.data.seats);
       // 自动选中推荐的座位
       setSelectedSeats(res.data.seats);
@@ -53,16 +53,24 @@ export default function SeatSelection() {
     } finally {
       setRecommending(false);
     }
-  }, [id, schedule, ticketCount]);
+  }, [id, schedule]);
 
   /**
-   * 切换票数时，清除已选和推荐座位，并自动重新推荐
+   * 切换票数时，自动重新推荐对应数量的座位
    */
   const handleTicketCountChange = (count: number) => {
     setTicketCount(count);
-    setSelectedSeats([]);
-    setRecommendedSeats([]);
+    recommendSeats(count);
   };
+
+  /**
+   * 排片加载完成后，自动推荐初始人数的座位
+   */
+  useEffect(() => {
+    if (schedule && !loading) {
+      recommendSeats(ticketCount);
+    }
+  }, [schedule, loading, ticketCount, recommendSeats]);
 
   /**
    * 切换座位选中状态
@@ -255,7 +263,7 @@ export default function SeatSelection() {
         {/* 智能推荐按钮 */}
         <div className="flex justify-center mb-4">
           <button
-            onClick={handleRecommend}
+            onClick={() => recommendSeats(ticketCount)}
             disabled={recommending}
             className="px-6 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-all font-medium shadow-md shadow-blue-500/30 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
           >
