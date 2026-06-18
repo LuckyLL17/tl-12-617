@@ -68,6 +68,20 @@ export interface Cinema {
   created_at: string;
 }
 
+/**
+ * 座位状态接口
+ * - available: 是否可用
+ * - sold: 是否已售出
+ * - locked: 是否已被锁定（待支付订单锁定）
+ * - locked_order_id: 锁定该座位的订单ID
+ */
+export interface Seat {
+  available: boolean;
+  sold: boolean;
+  locked: boolean;
+  locked_order_id: string | null;
+}
+
 export interface Schedule {
   id: string;
   movie_id: string;
@@ -76,7 +90,7 @@ export interface Schedule {
   end_time: string;
   hall: string;
   price: number;
-  seats: { [key: string]: { available: boolean; sold: boolean } };
+  seats: { [key: string]: Seat };
   movie_title?: string;
   cinema_name?: string;
   poster?: string;
@@ -91,7 +105,8 @@ export interface Order {
   schedule_id: string;
   seats: string[];
   total_price: number;
-  status: string;
+  status: 'pending' | 'paid' | 'cancelled';
+  expires_at?: string;
   created_at: string;
   start_time?: string;
   hall?: string;
@@ -164,8 +179,20 @@ export const scheduleAPI = {
 export const orderAPI = {
   getOrders: () => api.get<Order[]>('/orders'),
   getOrder: (id: string) => api.get<Order>(`/orders/${id}`),
+  /** 创建订单（锁座） */
   createOrder: (data: { schedule_id: string; seats: string[] }) =>
     api.post('/orders', data),
+  /** 订单支付 */
+  payOrder: (id: string) =>
+    api.post(`/orders/${id}/pay`),
+  /** 取消订单（释放锁座） */
+  cancelOrder: (id: string) =>
+    api.post(`/orders/${id}/cancel`),
+  /** 智能推荐座位 */
+  recommendSeats: (scheduleId: string, count: number) =>
+    api.get<{ seats: string[]; message: string }>(`/orders/${scheduleId}/recommend-seats`, {
+      params: { count }
+    }),
   updateOrderStatus: (id: string, status: string) =>
     api.put(`/orders/${id}/status`, { status })
 };

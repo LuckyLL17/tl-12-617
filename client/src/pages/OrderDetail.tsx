@@ -42,6 +42,7 @@ export default function OrderDetail() {
   }
 
   const statusText: { [key: string]: { text: string; color: string; icon: string } } = {
+    pending: { text: '待支付', color: 'text-orange-500', icon: '⏳' },
     paid: { text: '已支付', color: 'text-green-500', icon: '✅' },
     refunded: { text: '已退款', color: 'text-gray-500', icon: '↩️' },
     cancelled: { text: '已取消', color: 'text-red-500', icon: '❌' },
@@ -57,11 +58,27 @@ export default function OrderDetail() {
       />
       
       <div className="bg-white rounded-xl overflow-hidden shadow-sm">
-        <div className="bg-gradient-to-r from-green-500 to-green-600 text-white p-8 text-center">
-          <div className="text-6xl mb-4">🎉</div>
-          <h2 className="text-2xl font-bold">购票成功</h2>
-          <p className="mt-2 opacity-90">请提前15分钟到影院取票</p>
-        </div>
+        {order.status === 'paid' && (
+          <div className="bg-gradient-to-r from-green-500 to-green-600 text-white p-8 text-center">
+            <div className="text-6xl mb-4">🎉</div>
+            <h2 className="text-2xl font-bold">购票成功</h2>
+            <p className="mt-2 opacity-90">请提前15分钟到影院取票</p>
+          </div>
+        )}
+        {order.status === 'pending' && (
+          <div className="bg-gradient-to-r from-orange-500 to-orange-600 text-white p-8 text-center">
+            <div className="text-6xl mb-4">⏳</div>
+            <h2 className="text-2xl font-bold">待支付</h2>
+            <p className="mt-2 opacity-90">座位已锁定，请尽快完成支付</p>
+          </div>
+        )}
+        {order.status === 'cancelled' && (
+          <div className="bg-gradient-to-r from-gray-500 to-gray-600 text-white p-8 text-center">
+            <div className="text-6xl mb-4">❌</div>
+            <h2 className="text-2xl font-bold">订单已取消</h2>
+            <p className="mt-2 opacity-90">座位已释放，可重新购票</p>
+          </div>
+        )}
 
         <div className="p-6">
           <div className="flex gap-4 mb-6 pb-6 border-b">
