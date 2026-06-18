@@ -2,12 +2,26 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import bcrypt from 'bcryptjs';
 
+// SQLite数据库文件路径
 const dbPath = path.join(__dirname, '../movie_ticket.db');
 const db = new Database(dbPath);
 
+// 启用WAL模式，提升并发读写性能
 db.pragma('journal_mode = WAL');
 
+/**
+ * 初始化数据库
+ *
+ * 创建所有必要的数据表（如果不存在），并插入初始测试数据。
+ * 表结构说明：
+ * - users: 用户表，包含管理员和普通用户
+ * - movies: 电影表，存储电影基本信息
+ * - cinemas: 影院表，存储影院地址和联系方式
+ * - schedules: 排片表，包含座位图（JSON格式存储）
+ * - orders: 订单表，支持 pending/paid/cancelled/refunded 四种状态
+ */
 export const initDatabase = () => {
+  // 用户表
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
@@ -21,6 +35,7 @@ export const initDatabase = () => {
     )
   `);
 
+  // 电影表
   db.exec(`
     CREATE TABLE IF NOT EXISTS movies (
       id TEXT PRIMARY KEY,
@@ -38,6 +53,7 @@ export const initDatabase = () => {
     )
   `);
 
+  // 影院表
   db.exec(`
     CREATE TABLE IF NOT EXISTS cinemas (
       id TEXT PRIMARY KEY,
@@ -51,6 +67,9 @@ export const initDatabase = () => {
     )
   `);
 
+  // 排片表
+  // seats字段为JSON字符串，存储座位图数据
+  // 每个座位的结构：{ available, sold, locked, locked_by, locked_until }
   db.exec(`
     CREATE TABLE IF NOT EXISTS schedules (
       id TEXT PRIMARY KEY,
@@ -67,6 +86,9 @@ export const initDatabase = () => {
     )
   `);
 
+  // 订单表
+  // status字段支持：pending(待支付), paid(已支付), cancelled(已取消), refunded(已退款)
+  // 默认状态为pending，用户完成支付后更新为paid
   db.exec(`
     CREATE TABLE IF NOT EXISTS orders (
       id TEXT PRIMARY KEY,
@@ -74,17 +96,29 @@ export const initDatabase = () => {
       schedule_id TEXT NOT NULL,
       seats TEXT NOT NULL,
       total_price REAL NOT NULL,
-      status TEXT DEFAULT 'paid',
+      status TEXT DEFAULT 'pending',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (user_id) REFERENCES users(id),
       FOREIGN KEY (schedule_id) REFERENCES schedules(id)
     )
   `);
 
+  // 插入初始测试数据
   insertInitialData();
 };
 
+/**
+ * 插入初始测试数据
+ *
+ * 仅在对应表为空时插入，避免重复插入。
+ * 包含：
+ * - 2个测试用户（admin/user1）
+ * - 6部电影
+ * - 32个影院（覆盖6个城市）
+ * - 多个排片（3天 × 6部电影 × 16个影院 × 随机场次）
+ */
 const insertInitialData = () => {
+  // 插入测试用户
   const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get() as { count: number };
   if (userCount.count === 0) {
     const salt = bcrypt.genSaltSync(10);
@@ -98,6 +132,7 @@ const insertInitialData = () => {
     insertUser.run('user-001', 'user1', userPassword, '测试用户', 'https://api.dicebear.com/7.x/avataaars/svg?seed=user1', '13800138000', 'user');
   }
 
+  // 插入测试电影
   const movieCount = db.prepare('SELECT COUNT(*) as count FROM movies').get() as { count: number };
   if (movieCount.count === 0) {
     const movies = [
@@ -193,6 +228,7 @@ const insertInitialData = () => {
     });
   }
 
+  // 插入测试影院
   const cinemaCount = db.prepare('SELECT COUNT(*) as count FROM cinemas').get() as { count: number };
   if (cinemaCount.count === 0) {
     const cinemas = [
@@ -238,39 +274,42 @@ const insertInitialData = () => {
     });
   }
 
+  // 插入测试排片
   const scheduleCount = db.prepare('SELECT COUNT(*) as count FROM schedules').get() as { count: number };
   if (scheduleCount.count === 0) {
     const baseDate = new Date().toISOString().split('T')[0];
     const timeSlots = ['09:00', '11:30', '14:00', '16:30', '19:00', '21:30'];
     const halls = ['1号激光厅', '2号激光厅', '3号厅', 'IMAX厅', '杜比全景声厅', 'VIP厅'];
     const basePrices = [45, 55, 58, 68, 78, 98, 108, 128];
-    
+
     const movies = ['movie-001', 'movie-002', 'movie-003', 'movie-004', 'movie-005', 'movie-006'];
     const cinemas = ['cinema-001', 'cinema-002', 'cinema-003', 'cinema-004', 'cinema-005', 'cinema-006', 'cinema-007', 'cinema-008', 'cinema-010', 'cinema-013', 'cinema-016', 'cinema-018', 'cinema-021', 'cinema-023', 'cinema-025', 'cinema-027'];
-    
+
     const schedules: any[] = [];
     let schedId = 1;
-    
+
+    // 为未来3天生成排片数据
     for (let dayOffset = 0; dayOffset < 3; dayOffset++) {
       const date = new Date(baseDate);
       date.setDate(date.getDate() + dayOffset);
       const dateStr = date.toISOString().split('T')[0];
-      
+
       movies.forEach((movieId, movieIdx) => {
         cinemas.forEach((cinemaId, cinemaIdx) => {
+          // 每个电影在每个影院随机安排2-4个场次
           const numSchedules = Math.floor(Math.random() * 3) + 2;
           const selectedSlots = [...timeSlots].sort(() => Math.random() - 0.5).slice(0, numSchedules);
-          
+
           selectedSlots.forEach((time, slotIdx) => {
             const hour = parseInt(time.split(':')[0]);
             const movieDuration = [173, 159, 98, 140, 141, 180][movieIdx];
             const endHour = hour + Math.floor(movieDuration / 60);
             const endMin = Math.floor(movieDuration % 60);
             const endTime = `${String(endHour).padStart(2, '0')}:${String(endMin).padStart(2, '0')}`;
-            
+
             const priceIdx = (movieIdx + cinemaIdx + slotIdx + dayOffset) % basePrices.length;
             const hallIdx = (cinemaIdx + slotIdx) % halls.length;
-            
+
             schedules.push({
               id: `sched-${String(schedId).padStart(3, '0')}`,
               movie_id: movieId,
@@ -296,22 +335,40 @@ const insertInitialData = () => {
   }
 };
 
+/**
+ * 生成初始座位图数据
+ *
+ * 座位布局：8行(A-H) × 12列(1-12) = 96个座位
+ * 每个座位包含以下字段：
+ * - available: 是否可用（物理存在且未被移除）
+ * - sold: 是否已售出（已支付或待支付订单占用）
+ * - locked: 是否被锁定（用户选座后临时锁定）
+ * - locked_by: 锁定者用户ID（null表示未被锁定）
+ * - locked_until: 锁定过期时间（ISO格式，null表示未被锁定）
+ *
+ * 初始化时约20%的座位随机标记为已售出，模拟真实场景
+ *
+ * @returns JSON字符串形式的座位图
+ */
 function generateSeats(): string {
   const rows = 8;
   const cols = 12;
-  const seats: { [key: string]: { available: boolean; sold: boolean } } = {};
-  
+  const seats: { [key: string]: { available: boolean; sold: boolean; locked: boolean; locked_by: string | null; locked_until: string | null } } = {};
+
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
       const seatId = `${String.fromCharCode(65 + r)}${c + 1}`;
       const random = Math.random();
       seats[seatId] = {
         available: true,
-        sold: random < 0.2
+        sold: random < 0.2, // 约20%概率已售出
+        locked: false,
+        locked_by: null,
+        locked_until: null
       };
     }
   }
-  
+
   return JSON.stringify(seats);
 }
 
