@@ -42,13 +42,22 @@ api.interceptors.response.use(
   }
 );
 
-// 座位类型定义：包含可用、已售、锁定状态
+/**
+ * 座位类型定义
+ *
+ * 座位状态流转：
+ * - 可选：available=true, sold=false, locked=false
+ * - 已锁：available=true, sold=false, locked=true, locked_by=用户ID
+ * - 已售：available=true, sold=true, locked=false（订单创建后锁自动释放）
+ *
+ * locked_by 和 locked_until 仅在 locked=true 时有效
+ */
 export interface Seat {
-  available: boolean;
-  sold: boolean;
-  locked: boolean;
-  locked_by: string | null;
-  locked_until: string | null;
+  available: boolean;     // 座位是否物理可用（未被移除）
+  sold: boolean;          // 是否已售出（被订单占用）
+  locked: boolean;        // 是否被临时锁定（选座后未支付）
+  locked_by: string | null;   // 锁定者用户ID，null表示未被锁定
+  locked_until: string | null; // 锁定过期时间（ISO格式），null表示未被锁定
 }
 
 export interface Movie {
@@ -94,13 +103,14 @@ export interface Schedule {
   address?: string;
 }
 
+/** 订单接口：支持 pending/paid/cancelled/refunded 四种状态 */
 export interface Order {
   id: string;
   user_id: string;
   schedule_id: string;
-  seats: string[];
+  seats: string[];       // 订单占用的座位ID列表
   total_price: number;
-  status: string;
+  status: string;        // pending-待支付, paid-已支付, cancelled-已取消, refunded-已退款
   created_at: string;
   start_time?: string;
   hall?: string;

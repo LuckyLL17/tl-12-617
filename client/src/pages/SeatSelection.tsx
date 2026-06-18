@@ -4,27 +4,45 @@ import { scheduleAPI, Schedule, Seat } from '../services/api';
 import { useAuthStore } from '../store/authStore';
 import PageHeader from '../components/PageHeader';
 
+/**
+ * 选座页面组件
+ *
+ * 功能说明：
+ * 1. 人数选择：支持1-6人，点击人数按钮切换
+ * 2. 智能推荐：根据人数推荐相邻座位（优先同行连续，其次距银幕中央最近）
+ * 3. 手动选座：点击座位图中的可选座位进行选择
+ * 4. 锁座确认：选好座位后点击「确认选座」锁定，防止其他用户同时选择
+ * 5. 锁座有效期10分钟，超时自动释放
+ *
+ * 座位状态说明：
+ * - 可选（灰色）：available=true, sold=false, locked=false
+ * - 已选（绿色）：当前用户选中的座位
+ * - 已售（深灰）：sold=true，不可点击
+ * - 已锁（橙色）：locked=true 且被其他用户锁定，不可点击
+ */
 export default function SeatSelection() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   // 从URL参数获取初始票数
   const initialTicketCount = parseInt(searchParams.get('tickets') || '1', 10);
-  // 当前登录用户
+  // 当前登录用户（用于判断锁座归属）
   const user = useAuthStore(state => state.user);
 
   const [schedule, setSchedule] = useState<Schedule | null>(null);
+  // 当前选中的座位ID列表
   const [selectedSeats, setSelectedSeats] = useState<string[]>([]);
+  // 当前选择的观影人数
   const [ticketCount, setTicketCount] = useState(initialTicketCount);
   const [loading, setLoading] = useState(true);
   // 推荐座位加载状态
   const [recommending, setRecommending] = useState(false);
   // 锁座加载状态
   const [locking, setLocking] = useState(false);
-  // 是否已锁定当前选中的座位
+  // 是否已锁定当前选中的座位（锁定后不可修改选择，需先解锁）
   const [seatsLocked, setSeatsLocked] = useState(false);
 
-  // 获取排片信息
+  // 获取排片信息（含最新座位状态）
   useEffect(() => {
     const fetchSchedule = async () => {
       if (!id) return;
@@ -40,7 +58,7 @@ export default function SeatSelection() {
     fetchSchedule();
   }, [id]);
 
-  // 组件卸载时释放锁座
+  // 组件卸载时释放锁座，防止用户直接关闭页面导致座位永久锁定
   useEffect(() => {
     return () => {
       if (id && seatsLocked) {
@@ -53,8 +71,8 @@ export default function SeatSelection() {
   useEffect(() => {
     const handleBeforeUnload = () => {
       if (id && seatsLocked) {
-        // 使用 sendBeacon 保证请求能发出
         const token = useAuthStore.getState().token;
+        // 使用 sendBeacon 保证请求在页面关闭前能发出
         navigator.sendBeacon(
           `/api/schedules/${id}/lock`,
           JSON.stringify({ _method: 'DELETE' })
@@ -67,7 +85,11 @@ export default function SeatSelection() {
 
   /**
    * 判断座位是否可选
-   * 可选条件：座位可用、未售出、未被其他用户锁定
+   *
+   * 可选条件：
+   * 1. 座位存在且可用（available=true）
+   * 2. 座位未被售出（sold=false）
+   * 3. 座位未被其他用户锁定（locked=false 或 locked_by=当前用户）
    */
   const isSeatSelectable = useCallback((seatId: string): boolean => {
     if (!schedule?.seats[seatId]) return false;
@@ -79,11 +101,16 @@ export default function SeatSelection() {
   }, [schedule, user]);
 
   /**
-   * 点击座位进行选择/取消
+   * 点击座位进行选择/取消选择
+   *
+   * 规则：
+   * - 已锁定的座位不可修改（需先点击「重新选座」解锁）
+   * - 取消选择：如果座位已在选中列表中，移除
+   * - 添加选择：如果未超过票数限制，添加到选中列表
    */
   const toggleSeat = (seatId: string) => {
     if (!isSeatSelectable(seatId)) return;
-    // 如果已锁定座位，不允许修改选择（需先解锁）
+    // 锁定状态下不允许修改选择
     if (seatsLocked) {
       alert('座位已锁定，如需修改请先点击"重新选座"');
       return;
@@ -91,19 +118,24 @@ export default function SeatSelection() {
 
     setSelectedSeats(prev => {
       if (prev.includes(seatId)) {
+        // 取消选择
         return prev.filter(s => s !== seatId);
       }
+      // 检查是否超过票数限制
       if (prev.length >= ticketCount) {
         alert(`您已选择 ${ticketCount} 个座位，如需修改请先取消已选座位`);
         return prev;
       }
+      // 添加选择
       return [...prev, seatId];
     });
   };
 
   /**
    * 根据人数推荐座位
+   *
    * 调用后端推荐算法，优先推荐同行相邻座位
+   * 推荐成功后自动填入选中列表
    */
   const handleRecommend = async () => {
     if (!id) return;
@@ -115,7 +147,7 @@ export default function SeatSelection() {
         alert('抱歉，当前没有足够的相邻座位可供推荐');
         return;
       }
-      // 如果之前已锁定，先解锁
+      // 如果之前已锁定，先解锁再重新选择
       if (seatsLocked) {
         await scheduleAPI.unlockSeats(id);
         setSeatsLocked(false);
@@ -133,7 +165,9 @@ export default function SeatSelection() {
 
   /**
    * 锁定已选座位
+   *
    * 锁定后其他用户无法选择这些座位，有效期10分钟
+   * 同一用户同一场次只能有一组锁座，新锁座会自动释放旧锁
    */
   const handleLockSeats = async () => {
     if (!id || selectedSeats.length !== ticketCount) return;
@@ -146,7 +180,7 @@ export default function SeatSelection() {
       setSchedule(res.data);
     } catch (error: any) {
       alert(error.response?.data?.message || '锁座失败，请重新选择');
-      // 刷新座位状态
+      // 锁座失败时刷新座位状态并清空选择
       const res = await scheduleAPI.getSchedule(id);
       setSchedule(res.data);
       setSelectedSeats([]);
@@ -158,7 +192,7 @@ export default function SeatSelection() {
 
   /**
    * 重新选座
-   * 解锁当前锁定的座位，清空选择
+   * 解锁当前锁定的座位，清空选择列表，允许重新选择
    */
   const handleReselect = async () => {
     if (!id) return;
@@ -176,7 +210,7 @@ export default function SeatSelection() {
 
   /**
    * 进入支付页面
-   * 座位已锁定时才可进入
+   * 前提：座位已锁定且选满
    */
   const handleNext = () => {
     if (selectedSeats.length !== ticketCount) {
@@ -189,13 +223,14 @@ export default function SeatSelection() {
     }
     if (!id) return;
 
+    // 将选中的座位信息通过URL参数传递给支付页面
     const seatsParam = encodeURIComponent(JSON.stringify(selectedSeats));
     navigate(`/schedules/${id}/payment?seats=${seatsParam}`);
   };
 
   /**
    * 修改人数
-   * 修改人数后需要清空已选座位并解锁
+   * 修改人数后需要清空已选座位并解锁（如果已锁定）
    */
   const handleTicketCountChange = async (newCount: number) => {
     if (newCount === ticketCount) return;
@@ -216,7 +251,12 @@ export default function SeatSelection() {
 
   /**
    * 渲染座位图
-   * 显示4种状态：可选、已选、已售、已锁
+   *
+   * 座位状态与样式映射：
+   * - seat-available（灰色）：可选座位
+   * - seat-selected（绿色）：当前用户选中的座位
+   * - seat-sold（深灰）：已售出，不可点击
+   * - seat-locked（橙色）：被其他用户锁定，不可点击
    */
   const renderSeats = () => {
     if (!schedule) return null;
@@ -247,7 +287,7 @@ export default function SeatSelection() {
           seatClass = 'seat-locked';
         }
 
-        // 座位是否可点击
+        // 座位是否可点击（已售和被他人锁定的座位不可点击）
         const canClick = !isSold && !isLockedByOther;
 
         rowSeats.push(
@@ -296,6 +336,7 @@ export default function SeatSelection() {
   }
 
   const totalPrice = selectedSeats.length * schedule.price;
+  // 还需选择的座位数
   const remainingSeats = ticketCount - selectedSeats.length;
 
   return (
@@ -339,7 +380,7 @@ export default function SeatSelection() {
       {/* 人数选择与推荐区域 */}
       <div className="bg-white rounded-xl p-4 mb-6 shadow-sm">
         <div className="flex items-center justify-between">
-          {/* 人数选择器 */}
+          {/* 人数选择器：1-6人，选中后决定需要选几个座位 */}
           <div className="flex items-center gap-3">
             <span className="text-sm font-medium text-gray-700">观影人数</span>
             <div className="flex items-center gap-2">
@@ -360,7 +401,7 @@ export default function SeatSelection() {
             </div>
           </div>
 
-          {/* 推荐座位按钮 */}
+          {/* 推荐座位按钮：锁定状态下不可推荐 */}
           <button
             onClick={handleRecommend}
             disabled={recommending || seatsLocked}
@@ -384,18 +425,21 @@ export default function SeatSelection() {
 
       {/* 座位图 */}
       <div className="bg-white rounded-xl p-6 mb-6 shadow-sm">
+        {/* 银幕指示 */}
         <div className="flex justify-center mb-2">
           <div className="w-3/4 h-8 bg-gradient-to-b from-gray-300 to-gray-100 rounded-b-full flex items-center justify-center text-xs text-gray-500">
             银 幕
           </div>
         </div>
 
+        {/* 列号 */}
         <div className="flex justify-center my-6 text-sm">
           <div className="flex gap-1">{Array.from({ length: 12 }, (_, i) => (
             <span key={i} className="w-7 text-center text-gray-400">{i + 1}</span>
           ))}</div>
         </div>
 
+        {/* 座位网格 */}
         <div className="space-y-2">{renderSeats()}</div>
 
         {/* 座位图例 */}
@@ -419,7 +463,7 @@ export default function SeatSelection() {
         </div>
       </div>
 
-      {/* 底部操作栏 */}
+      {/* 底部操作栏（固定在底部） */}
       <div className="bg-white rounded-xl p-4 shadow-sm sticky bottom-0 z-10">
         <div className="flex items-center justify-between">
           <div>
@@ -440,6 +484,7 @@ export default function SeatSelection() {
             </div>
             {/* 根据锁定状态显示不同操作按钮 */}
             {!seatsLocked ? (
+              // 未锁定：显示「确认选座」按钮
               <button
                 onClick={handleLockSeats}
                 disabled={selectedSeats.length !== ticketCount || locking}
@@ -452,6 +497,7 @@ export default function SeatSelection() {
                 {locking ? '锁定中...' : '确认选座'}
               </button>
             ) : (
+              // 已锁定：显示「重新选座」和「下一步·支付」按钮
               <>
                 <button
                   onClick={handleReselect}
