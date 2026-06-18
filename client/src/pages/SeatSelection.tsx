@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { scheduleAPI, Schedule, Seat } from '../services/api';
 import { useAuthStore } from '../store/authStore';
@@ -41,6 +41,10 @@ export default function SeatSelection() {
   const [locking, setLocking] = useState(false);
   // 是否已锁定当前选中的座位（锁定后不可修改选择，需先解锁）
   const [seatsLocked, setSeatsLocked] = useState(false);
+  // 标记是否正在导航到支付页面
+  // 导航到支付页时不解锁座位，保持锁座状态直到订单创建
+  // 仅在用户主动离开（非前往支付）时才解锁
+  const navigatingToPayment = useRef(false);
 
   // 获取排片信息（含最新座位状态）
   useEffect(() => {
@@ -58,10 +62,14 @@ export default function SeatSelection() {
     fetchSchedule();
   }, [id]);
 
-  // 组件卸载时释放锁座，防止用户直接关闭页面导致座位永久锁定
+  // 组件卸载时释放锁座
+  // 关键：仅在非导航到支付页时解锁
+  // 导航到支付页时座位必须保持锁定状态，否则：
+  // 1. 其他用户可以选到已锁的座位（待支付座位被他人选中）
+  // 2. 创建订单时后端校验锁座状态失败（锁座已过期错误）
   useEffect(() => {
     return () => {
-      if (id && seatsLocked) {
+      if (id && seatsLocked && !navigatingToPayment.current) {
         scheduleAPI.unlockSeats(id).catch(() => {});
       }
     };
@@ -211,6 +219,7 @@ export default function SeatSelection() {
   /**
    * 进入支付页面
    * 前提：座位已锁定且选满
+   * 导航前设置标记，防止组件卸载时自动解锁座位
    */
   const handleNext = () => {
     if (selectedSeats.length !== ticketCount) {
@@ -223,7 +232,9 @@ export default function SeatSelection() {
     }
     if (!id) return;
 
-    // 将选中的座位信息通过URL参数传递给支付页面
+    // 标记正在导航到支付页，防止卸载时解锁
+    navigatingToPayment.current = true;
+
     const seatsParam = encodeURIComponent(JSON.stringify(selectedSeats));
     navigate(`/schedules/${id}/payment?seats=${seatsParam}`);
   };

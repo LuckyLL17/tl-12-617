@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { scheduleAPI, Schedule, orderAPI } from '../services/api';
 import PageHeader from '../components/PageHeader';
@@ -10,17 +10,18 @@ type PaymentStatus = 'idle' | 'processing' | 'success' | 'failed';
  * 支付页面组件
  *
  * 支付流程说明：
- * 1. 用户从选座页面进入，携带已锁定的座位信息
+ * 1. 用户从选座页面进入，携带已锁定的座位信息（座位仍处于锁定状态）
  * 2. 选择支付方式后点击「确认支付」
- * 3. 调用 POST /orders 创建订单（状态为 pending），座位标记为已售出
+ * 3. 调用 POST /orders 创建订单（状态为 pending），座位标记为已售出，锁释放
  * 4. 模拟支付等待后，调用 PUT /orders/:id/pay 确认支付（pending → paid）
  * 5. 支付成功跳转订单详情页
  *
- * 防竞态设计：
- * - 创建订单时后端会验证座位是否仍被当前用户锁定
- * - 如果锁已过期，创建订单会失败，用户需返回重新选座
- * - 订单创建后座位标记为 sold，即使支付失败也不会被其他人选走
- * - 超时未支付的订单会被自动取消，座位释放回可用池
+ * 锁座生命周期管理：
+ * - 进入支付页时座位仍被锁定（SeatSelection不会在导航时解锁）
+ * - 创建订单成功后，后端将座位标记为sold并释放锁
+ * - 用户取消支付或支付失败时，需要主动解锁座位
+ * - 支付成功后无需解锁（座位已售出）
+ * - 组件卸载时（非支付成功），自动解锁座位防止死锁
  */
 export default function Payment() {
   const { id } = useParams<{ id: string }>();
@@ -40,6 +41,9 @@ export default function Payment() {
   const [countdown, setCountdown] = useState(900);
   // 创建订单后保存订单ID，用于后续支付确认或取消
   const [orderId, setOrderId] = useState<string | null>(null);
+  // 标记支付是否已成功完成，用于控制组件卸载时是否解锁座位
+  // 支付成功后座位已标记为sold，不需要解锁
+  const paymentSucceeded = useRef(false);
 
   // 获取排片信息
   useEffect(() => {
@@ -56,6 +60,18 @@ export default function Payment() {
     };
     fetchSchedule();
   }, [id]);
+
+  // 组件卸载时释放锁座
+  // 仅在支付未成功时解锁：如果支付成功，座位已标记为sold，无需解锁
+  // 如果订单已创建（pending），取消订单会释放座位，此处也无需解锁
+  // 此处主要处理：用户在支付页直接关闭浏览器或通过浏览器后退离开的场景
+  useEffect(() => {
+    return () => {
+      if (id && !paymentSucceeded.current && !orderId) {
+        scheduleAPI.unlockSeats(id).catch(() => {});
+      }
+    };
+  }, [id, orderId]);
 
   // 支付倒计时：仅在支付处理中时计时
   useEffect(() => {
@@ -96,7 +112,7 @@ export default function Payment() {
     setPaymentStatus('processing');
 
     try {
-      // 第一步：创建订单（状态为 pending，座位标记为已售出）
+      // 第一步：创建订单（状态为 pending，座位标记为已售出，锁释放）
       const createRes = await orderAPI.createOrder({ schedule_id: id, seats });
       const newOrderId = createRes.data.id;
       setOrderId(newOrderId);
@@ -109,6 +125,8 @@ export default function Payment() {
 
       await new Promise(resolve => setTimeout(resolve, 1000));
 
+      // 标记支付成功，防止组件卸载时解锁
+      paymentSucceeded.current = true;
       setPaymentStatus('success');
 
       // 支付成功后跳转到订单详情
@@ -119,24 +137,33 @@ export default function Payment() {
       setPaymentStatus('failed');
       // 如果错误码为 LOCK_EXPIRED，提示用户锁座已过期
       if (error.response?.data?.code === 'LOCK_EXPIRED') {
-        console.error('锁座已过期，请重新选座');
+        alert('座位锁定已过期，请返回重新选座');
       }
     }
   };
 
   /**
    * 取消支付
-   * 如果订单已创建，调用取消API释放座位；然后返回选座页面
+   * - 如果订单已创建（pending），取消订单释放座位
+   * - 如果订单未创建，解锁座位
+   * 然后返回选座页面
    */
   const handleCancel = async () => {
     if (orderId) {
+      // 订单已创建，取消订单（后端会释放sold座位）
       try {
         await orderAPI.cancelOrder(orderId);
       } catch (error) {
         console.error('取消订单失败:', error);
       }
+    } else if (id) {
+      // 订单未创建，座位仍处于锁定状态，需要手动解锁
+      try {
+        await scheduleAPI.unlockSeats(id);
+      } catch (error) {
+        console.error('解锁座位失败:', error);
+      }
     }
-    // 返回选座页面
     navigate(`/schedules/${id}/seats?tickets=${seats.length}`);
   };
 
@@ -344,20 +371,26 @@ export default function Payment() {
                 {countdown <= 0 ? '支付超时，请重新下单' : '支付过程中出现问题，请重试'}
               </p>
               <div className="flex gap-4 justify-center">
-                {/* 如果订单已创建，可以取消订单并返回选座页 */}
-                {orderId && (
-                  <button
-                    onClick={async () => {
+                {/* 返回选座页：取消订单或解锁座位 */}
+                <button
+                  onClick={async () => {
+                    if (orderId) {
+                      // 订单已创建，取消订单释放座位
                       try {
                         await orderAPI.cancelOrder(orderId);
                       } catch (e) {}
-                      navigate(`/schedules/${id}/seats?tickets=${seats.length}`);
-                    }}
-                    className="px-6 py-3.5 bg-gray-100 text-gray-600 rounded-xl hover:bg-gray-200 transition-all font-medium"
-                  >
-                    取消并返回
-                  </button>
-                )}
+                    } else if (id) {
+                      // 订单未创建，解锁座位
+                      try {
+                        await scheduleAPI.unlockSeats(id);
+                      } catch (e) {}
+                    }
+                    navigate(`/schedules/${id}/seats?tickets=${seats.length}`);
+                  }}
+                  className="px-6 py-3.5 bg-gray-100 text-gray-600 rounded-xl hover:bg-gray-200 transition-all font-medium"
+                >
+                  取消并返回
+                </button>
                 <button
                   onClick={() => setPaymentStatus('idle')}
                   className="px-8 py-3.5 bg-gradient-to-r from-red-500 to-red-600 text-white rounded-xl hover:from-red-600 hover:to-red-700 transition-all font-medium shadow-lg shadow-red-500/30"
