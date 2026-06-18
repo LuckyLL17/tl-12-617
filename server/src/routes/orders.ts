@@ -5,6 +5,36 @@ import { authMiddleware, adminMiddleware, AuthRequest } from '../middleware/auth
 
 const router = Router();
 
+/**
+ * 座位数据类型定义
+ */
+interface SeatData {
+  available: boolean;
+  sold: boolean;
+  locked: boolean;
+  locked_by: string | null;
+  locked_until: string | null;
+}
+
+/**
+ * 规范化座位数据，确保旧格式数据也有 locked 相关字段
+ * 兼容数据库中已有的旧数据（只有 available 和 sold 字段）
+ */
+function normalizeSeats(seats: any): { [key: string]: SeatData } {
+  const normalized: { [key: string]: SeatData } = {};
+  for (const seatId of Object.keys(seats)) {
+    const seat = seats[seatId];
+    normalized[seatId] = {
+      available: seat.available !== undefined ? seat.available : true,
+      sold: seat.sold !== undefined ? seat.sold : false,
+      locked: seat.locked !== undefined ? seat.locked : false,
+      locked_by: seat.locked_by !== undefined ? seat.locked_by : null,
+      locked_until: seat.locked_until !== undefined ? seat.locked_until : null
+    };
+  }
+  return normalized;
+}
+
 router.get('/', authMiddleware, (req: AuthRequest, res) => {
   const userId = req.user?.id;
   const userRole = req.user?.role;
@@ -69,6 +99,11 @@ router.get('/:id', authMiddleware, (req: AuthRequest, res) => {
   res.json(row);
 });
 
+/**
+ * 创建订单接口
+ * 订单状态为 pending（待支付），座位被锁定
+ * 支付成功后调用支付接口将状态改为 paid
+ */
 router.post('/', authMiddleware, (req: AuthRequest, res) => {
   const userId = req.user?.id;
   const { schedule_id, seats } = req.body;
@@ -82,16 +117,31 @@ router.post('/', authMiddleware, (req: AuthRequest, res) => {
     return res.status(404).json({ message: '排片不存在' });
   }
   
-  const currentSeats = JSON.parse(schedule.seats);
+  // 规范化座位数据，兼容旧格式
+  const currentSeats = normalizeSeats(JSON.parse(schedule.seats));
+  const now = new Date();
   
+  // 检查座位是否可用
   for (const seatId of seats) {
-    if (!currentSeats[seatId] || !currentSeats[seatId].available || currentSeats[seatId].sold) {
-      return res.status(400).json({ message: `座位 ${seatId} 不可用` });
+    const seat = currentSeats[seatId];
+    if (!seat || !seat.available) {
+      return res.status(400).json({ message: `座位 ${seatId} 不存在` });
+    }
+    if (seat.sold) {
+      return res.status(400).json({ message: `座位 ${seatId} 已售出` });
+    }
+    // 检查是否被其他用户锁定
+    if (seat.locked && seat.locked_by !== userId) {
+      if (seat.locked_until && new Date(seat.locked_until) > now) {
+        return res.status(400).json({ message: `座位 ${seatId} 已被其他用户锁定，请选择其他座位` });
+      }
     }
   }
   
   const totalPrice = schedule.price * seats.length;
   const orderId = uuidv4();
+  const lockDuration = 15 * 60 * 1000; // 锁定15分钟
+  const lockUntil = new Date(now.getTime() + lockDuration);
   
   const insertOrder = db.prepare(
     'INSERT INTO orders (id, user_id, schedule_id, seats, total_price, status) VALUES (?, ?, ?, ?, ?, ?)'
@@ -99,10 +149,14 @@ router.post('/', authMiddleware, (req: AuthRequest, res) => {
   const updateSeats = db.prepare('UPDATE schedules SET seats = ? WHERE id = ?');
   
   const tx = db.transaction(() => {
-    insertOrder.run(orderId, userId, schedule_id, JSON.stringify(seats), totalPrice, 'paid');
+    // 创建待支付订单
+    insertOrder.run(orderId, userId, schedule_id, JSON.stringify(seats), totalPrice, 'pending');
     
+    // 锁定座位
     for (const seatId of seats) {
-      currentSeats[seatId].sold = true;
+      currentSeats[seatId].locked = true;
+      currentSeats[seatId].locked_by = userId;
+      currentSeats[seatId].locked_until = lockUntil.toISOString();
     }
     
     updateSeats.run(JSON.stringify(currentSeats), schedule_id);
@@ -112,14 +166,161 @@ router.post('/', authMiddleware, (req: AuthRequest, res) => {
   
   res.json({
     id: orderId,
-    message: '购票成功',
+    message: '订单创建成功，请尽快完成支付',
     order: {
       id: orderId,
       total_price: totalPrice,
       seats: seats,
-      schedule_id: schedule_id
+      schedule_id: schedule_id,
+      status: 'pending',
+      locked_until: lockUntil.toISOString()
     }
   });
+});
+
+/**
+ * 订单支付接口
+ * 将订单状态从 pending 改为 paid，座位从锁定改为已售
+ */
+router.post('/:id/pay', authMiddleware, (req: AuthRequest, res) => {
+  const { id } = req.params;
+  const userId = req.user?.id;
+  
+  const order = db.prepare('SELECT * FROM orders WHERE id = ? AND user_id = ?').get(id, userId) as any;
+  if (!order) {
+    return res.status(404).json({ message: '订单不存在' });
+  }
+  
+  if (order.status !== 'pending') {
+    return res.status(400).json({ message: '订单状态不正确，无法支付' });
+  }
+  
+  const schedule = db.prepare('SELECT * FROM schedules WHERE id = ?').get(order.schedule_id) as any;
+  if (!schedule) {
+    return res.status(404).json({ message: '排片不存在' });
+  }
+  
+  // 规范化座位数据，兼容旧格式
+  const seats = normalizeSeats(JSON.parse(schedule.seats));
+  const orderSeats = JSON.parse(order.seats);
+  const now = new Date();
+  
+  // 检查座位锁定是否过期
+  for (const seatId of orderSeats) {
+    const seat = seats[seatId];
+    if (!seat || !seat.locked || seat.locked_by !== userId) {
+      return res.status(400).json({ message: `座位 ${seatId} 锁定已失效，请重新选择座位` });
+    }
+    if (seat.locked_until && new Date(seat.locked_until) < now) {
+      return res.status(400).json({ message: '座位锁定已过期，请重新选择座位' });
+    }
+  }
+  
+  const updateOrder = db.prepare('UPDATE orders SET status = ? WHERE id = ?');
+  const updateSeats = db.prepare('UPDATE schedules SET seats = ? WHERE id = ?');
+  
+  const tx = db.transaction(() => {
+    // 更新订单状态为已支付
+    updateOrder.run('paid', id);
+    
+    // 将座位从锁定改为已售
+    for (const seatId of orderSeats) {
+      seats[seatId].sold = true;
+      seats[seatId].locked = false;
+      seats[seatId].locked_by = null;
+      seats[seatId].locked_until = null;
+    }
+    
+    updateSeats.run(JSON.stringify(seats), order.schedule_id);
+  });
+  
+  tx();
+  
+  res.json({ message: '支付成功', order_id: id });
+});
+
+/**
+ * 取消订单接口
+ * 取消待支付订单，释放锁定的座位
+ * 普通用户只能取消自己的订单并释放自己锁定的座位
+ * 管理员可以取消任何订单并释放任何人锁定的座位
+ */
+router.post('/:id/cancel', authMiddleware, (req: AuthRequest, res) => {
+  const { id } = req.params;
+  const userId = req.user?.id;
+  const userRole = req.user?.role;
+  const isAdmin = userRole === 'admin';
+  
+  let order;
+  if (isAdmin) {
+    order = db.prepare('SELECT * FROM orders WHERE id = ?').get(id) as any;
+  } else {
+    order = db.prepare('SELECT * FROM orders WHERE id = ? AND user_id = ?').get(id, userId) as any;
+  }
+  
+  if (!order) {
+    return res.status(404).json({ message: '订单不存在' });
+  }
+  
+  if (order.status !== 'pending') {
+    return res.status(400).json({ message: '只能取消待支付的订单' });
+  }
+  
+  const schedule = db.prepare('SELECT * FROM schedules WHERE id = ?').get(order.schedule_id) as any;
+  if (!schedule) {
+    return res.status(404).json({ message: '排片不存在' });
+  }
+  
+  // 规范化座位数据，兼容旧格式
+  const seats = normalizeSeats(JSON.parse(schedule.seats));
+  const orderSeats = JSON.parse(order.seats);
+  const now = new Date();
+  
+  // 预检查：验证座位锁定状态
+  for (const seatId of orderSeats) {
+    const seat = seats[seatId];
+    if (!seat) {
+      return res.status(400).json({ message: `座位 ${seatId} 不存在` });
+    }
+    
+    // 如果座位处于锁定状态
+    if (seat.locked && seat.locked_until && new Date(seat.locked_until) > now) {
+      // 普通用户必须校验 locked_by 是否匹配当前用户
+      if (!isAdmin && seat.locked_by !== userId) {
+        return res.status(400).json({ 
+          message: `座位 ${seatId} 不是由您锁定的，无法取消` 
+        });
+      }
+    }
+  }
+  
+  const updateOrder = db.prepare('UPDATE orders SET status = ? WHERE id = ?');
+  const updateSeats = db.prepare('UPDATE schedules SET seats = ? WHERE id = ?');
+  
+  const tx = db.transaction(() => {
+    // 更新订单状态为已取消
+    updateOrder.run('cancelled', id);
+    
+    // 释放锁定的座位
+    for (const seatId of orderSeats) {
+      const seat = seats[seatId];
+      if (seat && seat.locked) {
+        // 管理员可以释放任何人的锁座
+        // 普通用户只能释放自己的锁座
+        if (isAdmin || seat.locked_by === userId) {
+          seat.locked = false;
+          seat.locked_by = null;
+          seat.locked_until = null;
+        }
+      }
+    }
+    
+    updateSeats.run(JSON.stringify(seats), order.schedule_id);
+  });
+  
+  tx();
+  
+  res.json({ message: '订单已取消，座位已释放' });
 });
 
 router.put('/:id/status', authMiddleware, adminMiddleware, (req: AuthRequest, res) => {

@@ -296,10 +296,14 @@ const insertInitialData = () => {
   }
 };
 
+/**
+ * 生成初始座位数据
+ * @returns 座位数据的 JSON 字符串
+ */
 function generateSeats(): string {
   const rows = 8;
   const cols = 12;
-  const seats: { [key: string]: { available: boolean; sold: boolean } } = {};
+  const seats: { [key: string]: { available: boolean; sold: boolean; locked: boolean; locked_by: string | null; locked_until: string | null } } = {};
   
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
@@ -307,7 +311,10 @@ function generateSeats(): string {
       const random = Math.random();
       seats[seatId] = {
         available: true,
-        sold: random < 0.2
+        sold: random < 0.2,
+        locked: false,
+        locked_by: null,
+        locked_until: null
       };
     }
   }

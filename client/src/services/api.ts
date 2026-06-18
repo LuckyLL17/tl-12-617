@@ -68,6 +68,15 @@ export interface Cinema {
   created_at: string;
 }
 
+// 座位状态接口
+export interface Seat {
+  available: boolean;
+  sold: boolean;
+  locked: boolean;
+  locked_by: string | null;
+  locked_until: string | null;
+}
+
 export interface Schedule {
   id: string;
   movie_id: string;
@@ -76,7 +85,7 @@ export interface Schedule {
   end_time: string;
   hall: string;
   price: number;
-  seats: { [key: string]: { available: boolean; sold: boolean } };
+  seats: { [key: string]: Seat };
   movie_title?: string;
   cinema_name?: string;
   poster?: string;
@@ -158,7 +167,16 @@ export const scheduleAPI = {
   getSchedule: (id: string) => api.get<Schedule>(`/schedules/${id}`),
   createSchedule: (data: Partial<Schedule>) => api.post('/schedules', data),
   updateSchedule: (id: string, data: Partial<Schedule>) => api.put(`/schedules/${id}`, data),
-  deleteSchedule: (id: string) => api.delete(`/schedules/${id}`)
+  deleteSchedule: (id: string) => api.delete(`/schedules/${id}`),
+  // 锁定座位
+  lockSeats: (id: string, seats: string[]) =>
+    api.post(`/schedules/${id}/lock-seats`, { seats }),
+  // 解锁座位
+  unlockSeats: (id: string, seats: string[]) =>
+    api.post(`/schedules/${id}/unlock-seats`, { seats }),
+  // 推荐座位
+  recommendSeats: (id: string, count: number) =>
+    api.get(`/schedules/${id}/recommend-seats`, { params: { count } })
 };
 
 export const orderAPI = {
@@ -166,6 +184,10 @@ export const orderAPI = {
   getOrder: (id: string) => api.get<Order>(`/orders/${id}`),
   createOrder: (data: { schedule_id: string; seats: string[] }) =>
     api.post('/orders', data),
+  // 订单支付
+  payOrder: (id: string) => api.post(`/orders/${id}/pay`),
+  // 取消订单
+  cancelOrder: (id: string) => api.post(`/orders/${id}/cancel`),
   updateOrderStatus: (id: string, status: string) =>
     api.put(`/orders/${id}/status`, { status })
 };
