@@ -1,79 +1,162 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { scheduleAPI, Schedule, orderAPI } from '../services/api';
+import { scheduleAPI, Schedule, orderAPI, Order } from '../services/api';
 import PageHeader from '../components/PageHeader';
 
 type PaymentMethod = 'alipay' | 'wechat' | 'card';
 type PaymentStatus = 'idle' | 'processing' | 'success' | 'failed';
 
 export default function Payment() {
-  const { id } = useParams<{ id: string }>();
+  const { id, orderId } = useParams<{ id: string; orderId: string }>();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const seatsParam = searchParams.get('seats');
-  const seats = seatsParam ? JSON.parse(decodeURIComponent(seatsParam)) : [];
   
   const [schedule, setSchedule] = useState<Schedule | null>(null);
+  const [order, setOrder] = useState<Order | null>(null);
   const [loading, setLoading] = useState(true);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('alipay');
   const [paymentStatus, setPaymentStatus] = useState<PaymentStatus>('idle');
-  const [countdown, setCountdown] = useState(900);
-  const [orderId, setOrderId] = useState<string | null>(null);
+  const [countdown, setCountdown] = useState(900); // 15分钟倒计时
+  const [seats, setSeats] = useState<string[]>([]);
 
+  /**
+   * 获取订单和排片信息
+   * 支持两种模式：
+   * 1. orderId 模式：从订单ID获取（新流程）
+   * 2. scheduleId + seats 模式：从排片ID和座位获取（旧流程兼容）
+   */
   useEffect(() => {
-    const fetchSchedule = async () => {
-      if (!id) return;
+    const fetchData = async () => {
       try {
-        const res = await scheduleAPI.getSchedule(id);
-        setSchedule(res.data);
+        // 模式1：通过订单ID获取
+        if (orderId) {
+          const orderRes = await orderAPI.getOrder(orderId);
+          const orderData = orderRes.data;
+          setOrder(orderData);
+          setSeats(orderData.seats);
+          
+          // 获取排片信息
+          const scheduleRes = await scheduleAPI.getSchedule(orderData.schedule_id);
+          setSchedule(scheduleRes.data);
+          
+          // 计算剩余时间（15分钟锁定时间 - 已过时间）
+          const createdAt = new Date(orderData.created_at).getTime();
+          const now = Date.now();
+          const lockDuration = 15 * 60 * 1000; // 15分钟
+          const remaining = Math.max(0, Math.floor((lockDuration - (now - createdAt)) / 1000));
+          setCountdown(remaining);
+        }
+        // 模式2：通过排片ID+座位（旧模式兼容）
+        else if (id && seatsParam) {
+          const decodedSeats = JSON.parse(decodeURIComponent(seatsParam));
+          setSeats(decodedSeats);
+          
+          const scheduleRes = await scheduleAPI.getSchedule(id);
+          setSchedule(scheduleRes.data);
+        }
       } catch (error) {
-        console.error('获取排片信息失败:', error);
+        console.error('获取数据失败:', error);
       } finally {
         setLoading(false);
       }
     };
-    fetchSchedule();
-  }, [id]);
+    fetchData();
+  }, [id, orderId, seatsParam]);
 
+  /**
+   * 倒计时逻辑
+   */
   useEffect(() => {
-    if (paymentStatus !== 'processing') return;
+    if (paymentStatus !== 'idle' && paymentStatus !== 'processing') return;
     if (countdown <= 0) {
-      setPaymentStatus('failed');
       return;
     }
     const timer = setInterval(() => {
-      setCountdown(prev => prev - 1);
+      setCountdown(prev => {
+        if (prev <= 1) {
+          return 0;
+        }
+        return prev - 1;
+      });
     }, 1000);
     return () => clearInterval(timer);
   }, [countdown, paymentStatus]);
 
+  /**
+   * 格式化倒计时显示
+   */
   const formatCountdown = () => {
     const minutes = Math.floor(countdown / 60);
     const seconds = countdown % 60;
     return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
   };
 
+  /**
+   * 处理支付
+   */
   const handlePayment = async () => {
-    if (!id || seats.length === 0) return;
+    if (!id && !orderId) return;
     
     setPaymentStatus('processing');
     
     try {
+      // 模拟支付等待
       await new Promise(resolve => setTimeout(resolve, 2000));
       
-      const res = await orderAPI.createOrder({ schedule_id: id, seats });
-      setOrderId(res.data.id);
+      let currentOrderId = orderId;
       
-      await new Promise(resolve => setTimeout(resolve, 1500));
+      // 旧模式：先创建订单再支付
+      if (!orderId && id && seats.length > 0) {
+        const createRes = await orderAPI.createOrder({
+          schedule_id: id,
+          seats: seats
+        });
+        currentOrderId = createRes.data.id;
+      }
       
-      setPaymentStatus('success');
-      
-      setTimeout(() => {
-        navigate(`/orders/${res.data.id}`);
-      }, 2000);
+      if (currentOrderId) {
+        // 调用支付接口
+        await orderAPI.payOrder(currentOrderId);
+        
+        setPaymentStatus('success');
+        
+        // 支付成功后跳转到订单详情
+        setTimeout(() => {
+          navigate(`/orders/${currentOrderId}`);
+        }, 2000);
+      }
     } catch (error: any) {
       setPaymentStatus('failed');
       console.error('支付失败:', error);
+    }
+  };
+
+  /**
+   * 取消订单并释放座位
+   */
+  const handleCancelOrder = async () => {
+    if (!orderId && !order) return;
+    
+    const targetOrderId = orderId || order?.id;
+    if (!targetOrderId) return;
+    
+    if (!confirm('确定要取消订单吗？取消后座位将被释放。')) {
+      return;
+    }
+    
+    try {
+      await orderAPI.cancelOrder(targetOrderId);
+      alert('订单已取消，座位已释放');
+      // 返回选座页面
+      if (schedule) {
+        navigate(`/schedules/${schedule.id}/seats?tickets=${seats.length}`);
+      } else {
+        navigate(-1);
+      }
+    } catch (error: any) {
+      console.error('取消订单失败:', error);
+      alert(error.response?.data?.message || '取消订单失败，请重试');
     }
   };
 
@@ -103,7 +186,8 @@ export default function Payment() {
   ];
 
   return (
-    <div className="animate-fade-in max-w-2xl mx-auto">
+    <div className="animate-fade-in max-w-2xl mx-auto pb-20">
+      {/* 待支付状态 */}
       {paymentStatus === 'idle' && (
         <>
           <PageHeader 
@@ -111,8 +195,37 @@ export default function Payment() {
             subtitle="请选择支付方式并完成支付"
           />
           
+          {/* 倒计时提示 */}
+          {countdown > 0 && (
+            <div className="bg-orange-50 border border-orange-200 rounded-xl p-4 mb-6 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <span className="text-2xl">⏰</span>
+                <div>
+                  <p className="text-sm font-medium text-orange-800">座位已锁定，请尽快支付</p>
+                  <p className="text-xs text-orange-600">超时未支付，订单将自动取消，座位将被释放</p>
+                </div>
+              </div>
+              <div className="text-2xl font-mono font-bold text-orange-600">
+                {formatCountdown()}
+              </div>
+            </div>
+          )}
+          
+          {countdown <= 0 && (
+            <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-6">
+              <div className="flex items-center gap-3">
+                <span className="text-2xl">⚠️</span>
+                <div>
+                  <p className="text-sm font-medium text-red-800">支付超时</p>
+                  <p className="text-xs text-red-600">座位锁定已过期，请重新选择座位</p>
+                </div>
+              </div>
+            </div>
+          )}
+          
           <div className="bg-white rounded-xl overflow-hidden shadow-sm mb-6">
             <div className="p-6">
+              {/* 订单信息 */}
               <div className="flex gap-4 mb-6 pb-6 border-b">
                 <img
                   src={schedule.poster}
@@ -128,11 +241,17 @@ export default function Payment() {
                     {schedule.start_time} · {schedule.hall}
                   </p>
                   <p className="text-sm text-gray-500 mt-1">
-                    座位：{seats.sort().join('、')} ({seats.length}张)
+                    座位：{[...seats].sort().join('、')} ({seats.length}张)
                   </p>
+                  {order && (
+                    <p className="text-sm text-gray-400 mt-1 font-mono">
+                      订单号：{order.id}
+                    </p>
+                  )}
                 </div>
               </div>
 
+              {/* 支付方式选择 */}
               <div className="mb-6">
                 <h4 className="font-semibold mb-4">选择支付方式</h4>
                 <div className="space-y-3">
@@ -160,6 +279,7 @@ export default function Payment() {
                 </div>
               </div>
 
+              {/* 金额 */}
               <div className="bg-gray-50 rounded-xl p-4 mb-6">
                 <div className="flex justify-between items-center">
                   <span className="text-gray-600">应付金额</span>
@@ -167,12 +287,26 @@ export default function Payment() {
                 </div>
               </div>
 
+              {/* 操作按钮 */}
               <div className="flex gap-4">
+                {orderId && (
+                  <button
+                    onClick={handleCancelOrder}
+                    className="px-6 py-3.5 border border-gray-300 text-gray-600 rounded-xl hover:bg-gray-50 transition-all font-medium"
+                  >
+                    取消订单
+                  </button>
+                )}
                 <button
                   onClick={handlePayment}
-                  className="flex-1 py-3.5 bg-gradient-to-r from-red-500 to-red-600 text-white rounded-xl hover:from-red-600 hover:to-red-700 transition-all font-medium shadow-lg shadow-red-500/30"
+                  disabled={countdown <= 0}
+                  className={`flex-1 py-3.5 rounded-xl transition-all font-medium shadow-lg ${
+                    countdown > 0
+                      ? 'bg-gradient-to-r from-red-500 to-red-600 text-white hover:from-red-600 hover:to-red-700 shadow-red-500/30'
+                      : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                  }`}
                 >
-                  确认支付 ¥{totalPrice}
+                  {countdown > 0 ? `确认支付 ¥${totalPrice}` : '已超时，请重新下单'}
                 </button>
               </div>
             </div>
@@ -180,6 +314,7 @@ export default function Payment() {
         </>
       )}
 
+      {/* 支付处理中 */}
       {paymentStatus === 'processing' && (
         <>
           <PageHeader 
@@ -210,7 +345,9 @@ export default function Payment() {
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-gray-500">订单编号</span>
-                  <span className="text-sm text-gray-400 font-mono">等待生成...</span>
+                  <span className="text-sm text-gray-400 font-mono">
+                    {order?.id || orderId || '处理中...'}
+                  </span>
                 </div>
               </div>
             </div>
@@ -218,6 +355,7 @@ export default function Payment() {
         </>
       )}
 
+      {/* 支付成功 */}
       {paymentStatus === 'success' && (
         <>
           <PageHeader 
@@ -239,7 +377,7 @@ export default function Payment() {
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-gray-500">订单编号</span>
-                  <span className="text-sm text-gray-600 font-mono">{orderId}</span>
+                  <span className="text-sm text-gray-600 font-mono">{order?.id || orderId}</span>
                 </div>
               </div>
             </div>
@@ -247,6 +385,7 @@ export default function Payment() {
         </>
       )}
 
+      {/* 支付失败 */}
       {paymentStatus === 'failed' && (
         <>
           <PageHeader 
@@ -264,11 +403,19 @@ export default function Payment() {
                 {countdown <= 0 ? '支付超时，请重新下单' : '支付过程中出现问题，请重试'}
               </p>
               <div className="flex gap-4 justify-center">
+                {countdown > 0 && (
+                  <button
+                    onClick={() => setPaymentStatus('idle')}
+                    className="px-8 py-3.5 bg-gradient-to-r from-red-500 to-red-600 text-white rounded-xl hover:from-red-600 hover:to-red-700 transition-all font-medium shadow-lg shadow-red-500/30"
+                  >
+                    重新支付
+                  </button>
+                )}
                 <button
-                  onClick={() => setPaymentStatus('idle')}
-                  className="px-8 py-3.5 bg-gradient-to-r from-red-500 to-red-600 text-white rounded-xl hover:from-red-600 hover:to-red-700 transition-all font-medium shadow-lg shadow-red-500/30"
+                  onClick={() => navigate(-1)}
+                  className="px-8 py-3.5 border border-gray-300 text-gray-600 rounded-xl hover:bg-gray-50 transition-all font-medium"
                 >
-                  重新支付
+                  返回选座
                 </button>
               </div>
             </div>
