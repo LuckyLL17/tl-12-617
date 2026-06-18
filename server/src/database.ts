@@ -67,6 +67,7 @@ export const initDatabase = () => {
     )
   `);
 
+  // 订单表：status 支持 pending（待支付，锁座中）、paid（已支付）、cancelled（已取消）
   db.exec(`
     CREATE TABLE IF NOT EXISTS orders (
       id TEXT PRIMARY KEY,
@@ -74,12 +75,20 @@ export const initDatabase = () => {
       schedule_id TEXT NOT NULL,
       seats TEXT NOT NULL,
       total_price REAL NOT NULL,
-      status TEXT DEFAULT 'paid',
+      status TEXT DEFAULT 'pending',
+      locked_until DATETIME,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (user_id) REFERENCES users(id),
       FOREIGN KEY (schedule_id) REFERENCES schedules(id)
     )
   `);
+
+  // 迁移：为已存在的 orders 表添加 locked_until 字段
+  try {
+    db.prepare('ALTER TABLE orders ADD COLUMN locked_until DATETIME').run();
+  } catch (e) {
+    // 字段已存在，忽略错误
+  }
 
   insertInitialData();
 };
@@ -296,6 +305,13 @@ const insertInitialData = () => {
   }
 };
 
+/**
+ * 生成初始座位数据
+ * 每个座位包含：
+ * - available: 是否可用（物理存在）
+ * - sold: 是否已售出
+ * 注意：locked（锁定中）状态通过订单表动态计算，不存储在座位JSON中
+ */
 function generateSeats(): string {
   const rows = 8;
   const cols = 12;

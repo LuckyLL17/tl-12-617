@@ -6,7 +6,7 @@ import authRoutes from './routes/auth';
 import movieRoutes from './routes/movies';
 import cinemaRoutes from './routes/cinemas';
 import scheduleRoutes from './routes/schedules';
-import orderRoutes from './routes/orders';
+import orderRoutes, { cleanupExpiredOrders } from './routes/orders';
 import adminRoutes from './routes/admin';
 
 const app = express();
@@ -51,4 +51,22 @@ app.listen(PORT, () => {
   console.log('测试账号:');
   console.log('  管理员: admin / admin123');
   console.log('  普通用户: user1 / 123456');
+  console.log('');
+  
+  // 启动定时任务：每分钟清理一次超时的待支付订单
+  // 初始清理一次
+  const initialCleanup = cleanupExpiredOrders();
+  if (initialCleanup > 0) {
+    console.log(`🧹 启动时清理了 ${initialCleanup} 个超时订单`);
+  }
+  
+  // 定时清理（每分钟执行一次）
+  setInterval(() => {
+    const count = cleanupExpiredOrders();
+    if (count > 0) {
+      console.log(`🧹 定时清理了 ${count} 个超时订单`);
+    }
+  }, 60 * 1000);
+  
+  console.log('⏰ 超时订单清理定时任务已启动（每分钟执行一次）');
 });
