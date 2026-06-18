@@ -1,13 +1,15 @@
 import { useState, useEffect } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
 import { orderAPI, Order } from '../services/api';
 import PageHeader from '../components/PageHeader';
 
 export default function OrderDetail() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const [order, setOrder] = useState<Order | null>(null);
   const [loading, setLoading] = useState(true);
+  const [cancelling, setCancelling] = useState(false);
 
   useEffect(() => {
     const fetchOrder = async () => {
@@ -23,6 +25,38 @@ export default function OrderDetail() {
     };
     fetchOrder();
   }, [id]);
+
+  /**
+   * 取消订单
+   */
+  const handleCancelOrder = async () => {
+    if (!id || !order || order.status !== 'pending') return;
+    
+    if (!confirm('确定要取消订单吗？取消后座位将被释放。')) {
+      return;
+    }
+    
+    try {
+      setCancelling(true);
+      await orderAPI.cancelOrder(id);
+      // 刷新订单状态
+      const res = await orderAPI.getOrder(id);
+      setOrder(res.data);
+    } catch (error: any) {
+      console.error('取消订单失败:', error);
+      alert(error.response?.data?.message || '取消订单失败，请稍后重试');
+    } finally {
+      setCancelling(false);
+    }
+  };
+
+  /**
+   * 去支付
+   */
+  const handleGoPay = () => {
+    if (!id) return;
+    navigate(`/orders/${id}/payment`);
+  };
 
   if (loading) {
     return (
@@ -41,10 +75,34 @@ export default function OrderDetail() {
     );
   }
 
-  const statusText: { [key: string]: { text: string; color: string; icon: string } } = {
-    paid: { text: '已支付', color: 'text-green-500', icon: '✅' },
-    refunded: { text: '已退款', color: 'text-gray-500', icon: '↩️' },
-    cancelled: { text: '已取消', color: 'text-red-500', icon: '❌' },
+  /**
+   * 订单状态映射
+   */
+  const statusText: { [key: string]: { text: string; color: string; icon: string; bgGradient?: string } } = {
+    pending: { 
+      text: '待支付', 
+      color: 'text-orange-500', 
+      icon: '⏳',
+      bgGradient: 'from-orange-400 to-orange-500'
+    },
+    paid: { 
+      text: '已支付', 
+      color: 'text-green-500', 
+      icon: '✅',
+      bgGradient: 'from-green-500 to-green-600'
+    },
+    cancelled: { 
+      text: '已取消', 
+      color: 'text-red-500', 
+      icon: '❌',
+      bgGradient: 'from-gray-400 to-gray-500'
+    },
+    refunded: { 
+      text: '已退款', 
+      color: 'text-gray-500', 
+      icon: '↩️',
+      bgGradient: 'from-gray-400 to-gray-500'
+    },
   };
 
   const status = statusText[order.status] || statusText.paid;
@@ -57,10 +115,29 @@ export default function OrderDetail() {
       />
       
       <div className="bg-white rounded-xl overflow-hidden shadow-sm">
-        <div className="bg-gradient-to-r from-green-500 to-green-600 text-white p-8 text-center">
-          <div className="text-6xl mb-4">🎉</div>
-          <h2 className="text-2xl font-bold">购票成功</h2>
-          <p className="mt-2 opacity-90">请提前15分钟到影院取票</p>
+        {/* 顶部状态卡片 */}
+        <div className={`bg-gradient-to-r ${status.bgGradient || 'from-green-500 to-green-600'} text-white p-8 text-center`}>
+          <div className="text-6xl mb-4">
+            {order.status === 'paid' ? '🎉' : order.status === 'pending' ? '⏳' : order.status === 'cancelled' ? '😔' : '✅'}
+          </div>
+          <h2 className="text-2xl font-bold">
+            {order.status === 'paid' 
+              ? '购票成功' 
+              : order.status === 'pending' 
+                ? '待支付' 
+                : order.status === 'cancelled' 
+                  ? '订单已取消' 
+                  : '购票成功'
+            }
+          </h2>
+          <p className="mt-2 opacity-90">
+            {order.status === 'paid' 
+              ? '请提前15分钟到影院取票' 
+              : order.status === 'pending' 
+                ? '请在锁座时间内完成支付' 
+                : '座位已被释放，欢迎下次购买'
+            }
+          </p>
         </div>
 
         <div className="p-6">
@@ -75,6 +152,11 @@ export default function OrderDetail() {
               <p className={`mt-2 font-medium ${status.color}`}>
                 {status.icon} {status.text}
               </p>
+              {order.status === 'pending' && order.locked_until && (
+                <p className="text-sm text-gray-500 mt-1">
+                  锁座至：{new Date(order.locked_until).toLocaleString()}
+                </p>
+              )}
             </div>
           </div>
 
@@ -114,6 +196,7 @@ export default function OrderDetail() {
             <p className="text-sm text-gray-500 mt-1">下单时间：{order.created_at}</p>
           </div>
 
+          {/* 已支付订单显示取票二维码 */}
           {order.status === 'paid' && (
             <div className="flex flex-col items-center mt-6 p-6 bg-gray-50 rounded-xl">
               <h4 className="font-semibold text-gray-800 mb-4">🎫 取票二维码</h4>
@@ -135,10 +218,34 @@ export default function OrderDetail() {
             </div>
           )}
 
+          {/* 待支付订单显示操作按钮 */}
+          {order.status === 'pending' && (
+            <div className="flex gap-4 mt-6">
+              <button
+                onClick={handleCancelOrder}
+                disabled={cancelling}
+                className="flex-1 py-3.5 border-2 border-gray-300 text-gray-600 rounded-xl hover:bg-gray-50 transition-all font-medium disabled:opacity-50"
+              >
+                {cancelling ? '取消中...' : '取消订单'}
+              </button>
+              <button
+                onClick={handleGoPay}
+                className="flex-1 py-3.5 bg-gradient-to-r from-red-500 to-red-600 text-white rounded-xl hover:from-red-600 hover:to-red-700 transition-all font-medium shadow-lg shadow-red-500/30"
+              >
+                立即支付
+              </button>
+            </div>
+          )}
+
           <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mt-6">
             <p className="text-sm text-yellow-800">
               <span className="font-medium">⚠️ 温馨提示：</span>
-              请在开场前15分钟携带购票二维码或订单号到影院自助取票机或人工柜台取票。
+              {order.status === 'paid' 
+                ? '请在开场前15分钟携带购票二维码或订单号到影院自助取票机或人工柜台取票。'
+                : order.status === 'pending'
+                  ? '请在锁座时间内完成支付，超时订单将自动取消，座位将被释放。'
+                  : '订单已取消，座位已被释放。如有疑问请联系客服。'
+              }
             </p>
           </div>
 

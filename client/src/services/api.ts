@@ -68,6 +68,20 @@ export interface Cinema {
   created_at: string;
 }
 
+/**
+ * 座位信息类型
+ * - available: 座位是否存在（物理可用）
+ * - sold: 是否已售出
+ * - locked: 是否已被锁定（待支付订单占用）
+ * - locked_by: 锁定该座位的订单ID
+ */
+export interface SeatInfo {
+  available: boolean;
+  sold: boolean;
+  locked?: boolean;
+  locked_by?: string;
+}
+
 export interface Schedule {
   id: string;
   movie_id: string;
@@ -76,7 +90,7 @@ export interface Schedule {
   end_time: string;
   hall: string;
   price: number;
-  seats: { [key: string]: { available: boolean; sold: boolean } };
+  seats: { [key: string]: SeatInfo };
   movie_title?: string;
   cinema_name?: string;
   poster?: string;
@@ -91,7 +105,15 @@ export interface Order {
   schedule_id: string;
   seats: string[];
   total_price: number;
-  status: string;
+  /**
+   * 订单状态
+   * - pending: 待支付（座位锁定中）
+   * - paid: 已支付
+   * - cancelled: 已取消
+   */
+  status: 'pending' | 'paid' | 'cancelled';
+  /** 锁定截止时间（ISO格式） */
+  locked_until?: string;
   created_at: string;
   start_time?: string;
   hall?: string;
@@ -156,6 +178,14 @@ export const scheduleAPI = {
   getSchedules: (params?: { movie_id?: string; cinema_id?: string; date?: string }) =>
     api.get<Schedule[]>('/schedules', { params }),
   getSchedule: (id: string) => api.get<Schedule>(`/schedules/${id}`),
+  /**
+   * 推荐座位
+   * 根据指定的票数推荐最佳连续座位
+   */
+  recommendSeats: (id: string, count: number) =>
+    api.get<{ seats: string[]; message: string }>(`/schedules/${id}/recommend`, {
+      params: { count }
+    }),
   createSchedule: (data: Partial<Schedule>) => api.post('/schedules', data),
   updateSchedule: (id: string, data: Partial<Schedule>) => api.put(`/schedules/${id}`, data),
   deleteSchedule: (id: string) => api.delete(`/schedules/${id}`)
@@ -164,6 +194,35 @@ export const scheduleAPI = {
 export const orderAPI = {
   getOrders: () => api.get<Order[]>('/orders'),
   getOrder: (id: string) => api.get<Order>(`/orders/${id}`),
+  /**
+   * 锁座（创建待支付订单）
+   * 选定座位后先锁定，有15分钟支付时间
+   */
+  holdSeats: (data: { schedule_id: string; seats: string[] }) =>
+    api.post<{
+      id: string;
+      message: string;
+      order: {
+        id: string;
+        total_price: number;
+        seats: string[];
+        schedule_id: string;
+        status: 'pending';
+        locked_until: string;
+      };
+    }>('/orders/hold', data),
+  /**
+   * 支付订单
+   * 将待支付订单标记为已支付
+   */
+  payOrder: (id: string) =>
+    api.post<{ message: string; order: { id: string; status: string } }>(`/orders/${id}/pay`),
+  /**
+   * 取消订单
+   * 取消待支付订单，释放锁定的座位
+   */
+  cancelOrder: (id: string) =>
+    api.post<{ message: string }>(`/orders/${id}/cancel`),
   createOrder: (data: { schedule_id: string; seats: string[] }) =>
     api.post('/orders', data),
   updateOrderStatus: (id: string, status: string) =>

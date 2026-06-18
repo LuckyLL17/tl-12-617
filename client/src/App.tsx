@@ -74,6 +74,11 @@ function App() {
             <Payment />
           </PrivateRoute>
         } />
+        <Route path="orders/:id/payment" element={
+          <PrivateRoute>
+            <Payment />
+          </PrivateRoute>
+        } />
         <Route path="orders/:id" element={
           <PrivateRoute>
             <OrderDetail />
